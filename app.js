@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import morgan from "morgan";
 import cookieParser from "cookie-parser";
+import { supabase } from "./SupabaseClient/supabaseClient.js";
 
 dotenv.config();
 
