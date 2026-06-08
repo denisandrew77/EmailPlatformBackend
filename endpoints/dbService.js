@@ -88,6 +88,19 @@ dbRouter.post("/signIn", async (req, res) => {
     res.json({ token });
 });
 
+dbRouter.get("/getAllUsers", async (req, res) => {
+    const { data, error } = await supabase
+        .from("Users")
+        .select("id, userName, password, adminRole")
+        .order("id", { ascending: true });
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    res.json(data);
+});
+
 dbRouter.post("/addQuotation", async (req, res) => {
     const {
         quotationNumber,
