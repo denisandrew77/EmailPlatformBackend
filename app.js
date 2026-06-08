@@ -16,6 +16,20 @@ app.use(morgan("dev"));
 app.get("/", (req, res) => {
     res.json({ message: "EmailApp backend running" });
 });
+app.get("/getAllQuotations", async (req, res) => {
+    const { data, error } = await supabase
+        .from("Quotations")
+        .select(`
+      *,
+      Goods (*)
+    `);
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    res.json(data);
+});
 
 const PORT = process.env.PORT || 3001;
 
