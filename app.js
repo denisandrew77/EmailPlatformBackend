@@ -3,7 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import morgan from "morgan";
 import cookieParser from "cookie-parser";
-import { supabase } from "./SupabaseClient/supabaseClient.js";
+import { dbRouter } from "./endpoints/dbService.js";
 
 dotenv.config();
 
@@ -17,20 +17,8 @@ app.use(morgan("dev"));
 app.get("/", (req, res) => {
     res.json({ message: "EmailApp backend running" });
 });
-app.get("/getAllQuotations", async (req, res) => {
-    const { data, error } = await supabase
-        .from("Quotations")
-        .select(`
-      *,
-      Goods (*)
-    `);
 
-    if (error) {
-        return res.status(500).json({ error: error.message });
-    }
-
-    res.json(data);
-});
+app.use("/", dbRouter);
 
 const PORT = process.env.PORT || 3001;
 
