@@ -54,6 +54,40 @@ const toQuotationResponse = (quotation, goods) => ({
     userName: quotation.userName,
 });
 
+dbRouter.post("/signIn", async (req, res) => {
+    const { userName, password } = req.body;
+
+    const { data: user, error } = await supabase
+        .from("Users")
+        .select("userName, password, adminRole")
+        .eq("userName", userName)
+        .eq("password", password)
+        .maybeSingle();
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    if (!user) {
+        return res.json(JSON.stringify(false));
+    }
+
+    if (!process.env.ACCESS_TOKEN_SECRET) {
+        return res.status(500).json({ error: "ACCESS_TOKEN_SECRET is not configured" });
+    }
+
+    const token = jwt.sign(
+        {
+            userName: user.userName,
+            adminRole: user.adminRole,
+        },
+        process.env.ACCESS_TOKEN_SECRET,
+        { expiresIn: "10h" }
+    );
+
+    res.json({ token });
+});
+
 dbRouter.post("/addQuotation", async (req, res) => {
     const {
         quotationNumber,
