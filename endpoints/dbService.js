@@ -125,11 +125,17 @@ dbRouter.post("/addQuotation", async (req, res) => {
         return res.status(401).json({ error: "Missing or invalid user token" });
     }
 
+    const { data: user, error } = await supabase
+        .from("Users")
+        .select("id, userName")
+        .eq("userName", decoded.userName)
+        .single();
+
     const { error: quotationError } = await supabase
         .from("Quotations")
         .insert({
             id: quotationNumber,
-            userName,
+            userId: user.id,
             senderPostalCode,
             senderCity,
             senderCountry,
