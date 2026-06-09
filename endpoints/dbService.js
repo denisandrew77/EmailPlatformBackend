@@ -21,6 +21,33 @@ const getAuthorizedUserName = (req) => {
     return jwt.decode(token)?.userName ?? null;
 };
 
+const getAuthorizedUser = (req) => {
+    const token = req.headers.authorization;
+    if (!token || !process.env.ACCESS_TOKEN_SECRET) return null;
+
+    try {
+        return jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+    } catch {
+        return null;
+    }
+};
+
+const requireAdmin = (req, res) => {
+    const user = getAuthorizedUser(req);
+
+    if (!user) {
+        res.status(401).json({ error: "Missing or invalid user token" });
+        return false;
+    }
+
+    if (user.adminRole !== true) {
+        res.status(403).json({ error: "Admin rights required" });
+        return false;
+    }
+
+    return true;
+};
+
 const toQuotationResponse = (quotation, goods, users = []) => ({
     id: quotation.id,
     dateSent: quotation.createdAt ? new Date(quotation.createdAt).toLocaleDateString("ro-RO") : "",
@@ -53,6 +80,10 @@ const toQuotationResponse = (quotation, goods, users = []) => ({
     type: quotation.types ? quotation.types.split("/") : [],
     userName: users.find((user) => user.id === quotation.userId)?.userName ?? "",
 });
+
+const normalizeAdminRole = (adminRole) => {
+    return adminRole === true || adminRole === "true" || adminRole === "Admin";
+};
 
 dbRouter.post("/signIn", async (req, res) => {
     const { userName, password } = req.body;
@@ -90,6 +121,8 @@ dbRouter.post("/signIn", async (req, res) => {
 });
 
 dbRouter.get("/getAllUsers", async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+
     const { data, error } = await supabase
         .from("Users")
         .select("id, userName, password, adminRole")
@@ -100,6 +133,108 @@ dbRouter.get("/getAllUsers", async (req, res) => {
     }
 
     res.json(data);
+});
+
+const handleCreateUser = async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+
+    const { newUserName, password, adminRole = false } = req.body;
+
+    if (!newUserName || !password) {
+        return res.status(400).json(false);
+    }
+
+    const { data: existingUser, error: existingUserError } = await supabase
+        .from("Users")
+        .select("id")
+        .eq("userName", newUserName)
+        .maybeSingle();
+
+    if (existingUserError) {
+        return res.status(500).json({ error: existingUserError.message });
+    }
+
+    if (existingUser) {
+        return res.json(false);
+    }
+
+    const { error } = await supabase
+        .from("Users")
+        .insert({
+            userName: newUserName,
+            password,
+            adminRole: normalizeAdminRole(adminRole),
+        });
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    res.json(true);
+};
+
+dbRouter.post("/addUser", handleCreateUser);
+dbRouter.post("/createUser", handleCreateUser);
+
+dbRouter.post("/editUser", async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+
+    const { id, newUsername, password, adminRole = false } = req.body;
+
+    if (!id || !newUsername || !password) {
+        return res.status(400).json(false);
+    }
+
+    const { data: existingUser, error: existingUserError } = await supabase
+        .from("Users")
+        .select("id")
+        .eq("userName", newUsername)
+        .neq("id", id)
+        .maybeSingle();
+
+    if (existingUserError) {
+        return res.status(500).json({ error: existingUserError.message });
+    }
+
+    if (existingUser) {
+        return res.json(false);
+    }
+
+    const { error } = await supabase
+        .from("Users")
+        .update({
+            userName: newUsername,
+            password,
+            adminRole: normalizeAdminRole(adminRole),
+        })
+        .eq("id", id);
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    res.json(true);
+});
+
+dbRouter.post("/deleteUser", async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+
+    const { id } = req.body;
+
+    if (!id) {
+        return res.status(400).json(false);
+    }
+
+    const { error } = await supabase
+        .from("Users")
+        .delete()
+        .eq("id", id);
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    res.json(true);
 });
 
 dbRouter.post("/addQuotation", async (req, res) => {
