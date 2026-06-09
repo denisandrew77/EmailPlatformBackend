@@ -21,7 +21,7 @@ const getAuthorizedUserName = (req) => {
     return jwt.decode(token)?.userName ?? null;
 };
 
-const toQuotationResponse = (quotation, goods) => ({
+const toQuotationResponse = (quotation, goods, users = []) => ({
     id: quotation.id,
     dateSent: quotation.createdAt ? new Date(quotation.createdAt).toLocaleDateString("ro-RO") : "",
     sender: {
@@ -51,7 +51,7 @@ const toQuotationResponse = (quotation, goods) => ({
         })),
     observations: quotation.observations,
     type: quotation.types ? quotation.types.split("/") : [],
-    userName: quotation.userName,
+    userName: users.find((user) => user.id === quotation.userId)?.userName ?? "",
 });
 
 dbRouter.post("/signIn", async (req, res) => {
@@ -59,7 +59,7 @@ dbRouter.post("/signIn", async (req, res) => {
 
     const { data: user, error } = await supabase
         .from("Users")
-        .select("userName, password, adminRole")
+        .select("id, userName, password, adminRole")
         .eq("userName", userName)
         .eq("password", password)
         .maybeSingle();
@@ -78,6 +78,7 @@ dbRouter.post("/signIn", async (req, res) => {
 
     const token = jwt.sign(
         {
+            userId: user.id,
             userName: user.userName,
             adminRole: user.adminRole,
         },
@@ -125,13 +126,15 @@ dbRouter.post("/addQuotation", async (req, res) => {
         return res.status(401).json({ error: "Missing or invalid user token" });
     }
 
-    const decoded = jwt.verify(req.headers.authorization.token, process.env.ACCESS_TOKEN_SECRET);
-
-    const { data: user, error } = await supabase
+    const { data: user, error: userError } = await supabase
         .from("Users")
         .select("id, userName")
-        .eq("userName", decoded.userName)
+        .eq("userName", userName)
         .single();
+
+    if (userError || !user) {
+        return res.status(401).json({ error: userError?.message ?? "User not found" });
+    }
 
     const { error: quotationError } = await supabase
         .from("Quotations")
@@ -199,7 +202,15 @@ dbRouter.get("/getAllQuotations", async (req, res) => {
         return res.status(500).json({ error: goodsError.message });
     }
 
-    res.json(quotations.map((quotation) => toQuotationResponse(quotation, goods)));
+    const { data: users, error: usersError } = await supabase
+        .from("Users")
+        .select("id, userName");
+
+    if (usersError) {
+        return res.status(500).json({ error: usersError.message });
+    }
+
+    res.json(quotations.map((quotation) => toQuotationResponse(quotation, goods, users)));
 });
 
 dbRouter.get("/getLastNumber", async (req, res) => {
