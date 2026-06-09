@@ -125,6 +125,8 @@ dbRouter.post("/addQuotation", async (req, res) => {
         return res.status(401).json({ error: "Missing or invalid user token" });
     }
 
+    const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+
     const { data: user, error } = await supabase
         .from("Users")
         .select("id, userName")
