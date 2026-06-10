@@ -48,6 +48,20 @@ const requireAdmin = (req, res) => {
     return true;
 };
 
+const quotationCategoriesToTypeList = (quotation) => {
+    const categories = [];
+
+    if (quotation.threeTonnCategory) {
+        categories.push("3.5T");
+    }
+
+    if (quotation.sevenTonnCategory) {
+        categories.push("7.5T Truck - 24T Truck");
+    }
+
+    return categories;
+};
+
 const toQuotationResponse = (quotation, goods, users = []) => ({
     id: quotation.id,
     dateSent: quotation.createdAt ? new Date(quotation.createdAt).toLocaleDateString("ro-RO") : "",
@@ -77,7 +91,7 @@ const toQuotationResponse = (quotation, goods, users = []) => ({
             stack: good.goodsStack,
         })),
     observations: quotation.observations,
-    type: quotation.types ? quotation.types.split("/") : [],
+    type: quotationCategoriesToTypeList(quotation),
     userName: users.find((user) => user.id === quotation.userId)?.userName ?? "",
 });
 
@@ -251,7 +265,8 @@ dbRouter.post("/addQuotation", async (req, res) => {
         receiverDate,
         receiverTime,
         goods = [],
-        types,
+        threeTonnCategory = false,
+        sevenTonnCategory = false,
         observations = "",
     } = req.body;
 
@@ -286,7 +301,8 @@ dbRouter.post("/addQuotation", async (req, res) => {
             receiverCountry,
             receiverDate,
             receiverTime,
-            types,
+            threeTonnCategory: Boolean(threeTonnCategory),
+            sevenTonnCategory: Boolean(sevenTonnCategory),
             observations,
         });
 
