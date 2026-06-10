@@ -256,7 +256,7 @@ dbRouter.get("/getAllCompanies", async (req, res) => {
 
     const { data, error } = await supabase
         .from("Companies")
-        .select("id, fiscalCode, emailAddress, created_at, threeTonnCategory, sevenTonnCategory")
+        .select("id, name, country, fiscalCode, emailAddress, created_at, threeTonnCategory, sevenTonnCategory")
         .order("created_at", { ascending: false });
 
     if (error) {
@@ -270,24 +270,85 @@ dbRouter.post("/addCompany", async (req, res) => {
     if (!requireAdmin(req, res)) return;
 
     const {
+        name,
+        country,
         fiscalCode,
         emailAddress,
         threeTonnCategory = false,
         sevenTonnCategory = false,
     } = req.body;
 
-    if (!fiscalCode || !emailAddress) {
+    if (!name || !country || !fiscalCode || !emailAddress) {
         return res.status(400).json(false);
     }
 
     const { error } = await supabase
         .from("Companies")
         .insert({
+            name,
+            country,
             fiscalCode,
             emailAddress,
             threeTonnCategory: Boolean(threeTonnCategory),
             sevenTonnCategory: Boolean(sevenTonnCategory),
         });
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    res.json(true);
+});
+
+dbRouter.post("/editCompany", async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+
+    const {
+        id,
+        name,
+        country,
+        fiscalCode,
+        emailAddress,
+        threeTonnCategory = false,
+        sevenTonnCategory = false,
+    } = req.body;
+
+    if (!id || !name || !country || !fiscalCode || !emailAddress) {
+        return res.status(400).json(false);
+    }
+
+    const { error } = await supabase
+        .from("Companies")
+        .update({
+            name,
+            country,
+            fiscalCode,
+            emailAddress,
+            threeTonnCategory: Boolean(threeTonnCategory),
+            sevenTonnCategory: Boolean(sevenTonnCategory),
+        })
+        .eq("id", id);
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    res.json(true);
+});
+
+dbRouter.post("/deleteCompany", async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+
+    const { id } = req.body;
+
+    if (!id) {
+        return res.status(400).json(false);
+    }
+
+    const { error } = await supabase
+        .from("Companies")
+        .delete()
+        .eq("id", id);
 
     if (error) {
         return res.status(500).json({ error: error.message });
