@@ -251,6 +251,51 @@ dbRouter.post("/deleteUser", async (req, res) => {
     res.json(true);
 });
 
+dbRouter.get("/getAllCompanies", async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+
+    const { data, error } = await supabase
+        .from("Companies")
+        .select("id, fiscalCode, emailAddress, created_at, threeTonnCategory, sevenTonnCategory")
+        .order("created_at", { ascending: false });
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    res.json(data);
+});
+
+dbRouter.post("/addCompany", async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+
+    const {
+        fiscalCode,
+        emailAddress,
+        threeTonnCategory = false,
+        sevenTonnCategory = false,
+    } = req.body;
+
+    if (!fiscalCode || !emailAddress) {
+        return res.status(400).json(false);
+    }
+
+    const { error } = await supabase
+        .from("Companies")
+        .insert({
+            fiscalCode,
+            emailAddress,
+            threeTonnCategory: Boolean(threeTonnCategory),
+            sevenTonnCategory: Boolean(sevenTonnCategory),
+        });
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    res.json(true);
+});
+
 dbRouter.post("/addQuotation", async (req, res) => {
     const {
         quotationNumber,
