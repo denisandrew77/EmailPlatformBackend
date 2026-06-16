@@ -6,13 +6,17 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node app.js",
-    "dev": "nodemon app.js"
+    "dev": "nodemon app.js",
+    "worker:email": "node workers/emailWorker.js",
+    "dev:worker:email": "nodemon workers/emailWorker.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@aws-sdk/client-ses": "^3.1069.0",
+    "@aws-sdk/client-sqs": "^3.1069.0",
     "@supabase/supabase-js": "^2.108.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",

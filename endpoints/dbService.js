@@ -1,6 +1,7 @@
 import { Router } from "express";
 import jwt from "jsonwebtoken";
 import { supabase } from "../SupabaseClient/supabaseClient.js";
+import { enqueueEmailJob, enqueueEmailJobs } from "../services/emailQueueService.js";
 
 export const dbRouter = Router();
 
@@ -355,6 +356,86 @@ dbRouter.post("/deleteCompany", async (req, res) => {
     }
 
     res.json(true);
+});
+
+dbRouter.post("/queueEmail", async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+
+    const { to, subject, text, html, template, templateData, metadata = {} } = req.body;
+
+    try {
+        const messageId = await enqueueEmailJob({ to, subject, text, html, template, templateData, metadata });
+        res.json({ queued: true, messageId });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+dbRouter.post("/queueCompanyEmailCampaign", async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+
+    const {
+        subject,
+        text,
+        html,
+        template,
+        templateData = {},
+        companyIds = [],
+        threeTonnCategory = false,
+        sevenTonnCategory = false,
+    } = req.body;
+
+    if (!template && (!subject || (!text && !html))) {
+        return res.status(400).json(false);
+    }
+
+    let query = supabase
+        .from("Companies")
+        .select("id, name, emailAddress, threeTonnCategory, sevenTonnCategory");
+
+    if (companyIds.length) {
+        query = query.in("id", companyIds);
+    } else if (threeTonnCategory || sevenTonnCategory) {
+        if (threeTonnCategory && sevenTonnCategory) {
+            query = query.or("threeTonnCategory.eq.true,sevenTonnCategory.eq.true");
+        } else if (threeTonnCategory) {
+            query = query.eq("threeTonnCategory", true);
+        } else if (sevenTonnCategory) {
+            query = query.eq("sevenTonnCategory", true);
+        }
+    }
+
+    const { data: companies, error } = await query;
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    const jobs = companies
+        .filter((company) => company.emailAddress)
+        .map((company) => ({
+            to: company.emailAddress,
+            subject,
+            text,
+            html,
+            template,
+            templateData: {
+                ...templateData,
+                company,
+            },
+            metadata: {
+                companyId: company.id,
+                companyName: company.name,
+                campaignType: "company",
+            },
+        }));
+
+    try {
+        const queued = await enqueueEmailJobs(jobs);
+        res.json({ queued: true, count: queued.length, jobs: queued });
+    } catch (queueError) {
+        res.status(500).json({ error: queueError.message });
+    }
 });
 
 dbRouter.post("/addQuotation", async (req, res) => {
