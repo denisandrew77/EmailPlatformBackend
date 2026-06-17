@@ -6,7 +6,8 @@ const getSenderEmail = () => {
         throw new Error("SES_FROM_EMAIL is not configured");
     }
 
-    return process.env.SES_FROM_EMAIL;
+    const senderName = process.env.SES_FROM_NAME || "ByExpress";
+    return `"${senderName}" <${process.env.SES_FROM_EMAIL}>`;
 };
 
 export const sendEmail = async ({ to, subject, text, html }) => {

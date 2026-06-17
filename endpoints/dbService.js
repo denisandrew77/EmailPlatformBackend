@@ -380,6 +380,7 @@ dbRouter.post("/queueCompanyEmailCampaign", async (req, res) => {
         html,
         template,
         templateData = {},
+        observations,
         companyIds = [],
         threeTonnCategory = false,
         sevenTonnCategory = false,
@@ -411,6 +412,8 @@ dbRouter.post("/queueCompanyEmailCampaign", async (req, res) => {
         return res.status(500).json({ error: error.message });
     }
 
+    console.log("Queue campaign observations present:", Boolean(String(observations ?? templateData.observations ?? "").trim()));
+
     const jobs = companies
         .filter((company) => company.emailAddress)
         .map((company) => ({
@@ -421,6 +424,7 @@ dbRouter.post("/queueCompanyEmailCampaign", async (req, res) => {
             template,
             templateData: {
                 ...templateData,
+                observations: observations ?? templateData.observations ?? "",
                 company,
             },
             metadata: {
@@ -456,6 +460,8 @@ dbRouter.post("/addQuotation", async (req, res) => {
         sevenTonnCategory = false,
         observations = "",
     } = req.body;
+
+    console.log("Add quotation observations present:", Boolean(String(observations).trim()));
 
     const userName = getAuthorizedUserName(req);
 
@@ -519,7 +525,10 @@ dbRouter.post("/addQuotation", async (req, res) => {
         }
     }
 
-    res.json(true);
+    res.json({
+        created: true,
+        observations,
+    });
 });
 
 dbRouter.get("/getAllQuotations", async (req, res) => {

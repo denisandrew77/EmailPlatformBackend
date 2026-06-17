@@ -5,6 +5,7 @@ import morgan from "morgan";
 import cookieParser from "cookie-parser";
 import { fileURLToPath } from "url";
 import { dbRouter } from "./endpoints/dbService.js";
+import { startEmailWorker } from "./workers/emailWorker.js";
 
 dotenv.config();
 
@@ -28,3 +29,7 @@ const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
+
+if (process.env.RUN_EMAIL_WORKER_IN_API === "true") {
+    startEmailWorker();
+}

@@ -47,8 +47,13 @@ const formatGoodsLine = (goods = []) => {
     return `${totalWeight} kgs - ${totalNumber} ${goodsType} - ${escapeHtml(firstGood.length)} x ${escapeHtml(firstGood.width)} x ${escapeHtml(firstGood.height)} (LxWxH) - stack - ${stackText}`;
 };
 
+const getObservations = (data) => {
+    return String(data.observations ?? data.observation ?? data.remarks ?? "").trim();
+};
+
 const buildText = (data) => {
-    return [
+    const observations = getObservations(data);
+    const lines = [
         "Hello,",
         "",
         "Can i have your best price and service option for:",
@@ -61,6 +66,14 @@ const buildText = (data) => {
         "",
         "Goods:",
         formatGoodsLine(data.goods),
+    ];
+
+    if (observations) {
+        lines.push("", "Observations:", observations);
+    }
+
+    return [
+        ...lines,
         "",
         "Thank you for your answer.",
         "",
@@ -73,13 +86,14 @@ export const buildQuotationRequestEmail = (data) => {
     const logoUrl = process.env.BYEXPRESS_LOGO_URL;
     const subject = data.subject ?? buildSubject(data);
     const text = buildText(data);
+    const observations = getObservations(data);
 
     const html = `
 <!doctype html>
 <html>
   <body style="margin:0; padding:0; background:#f4f7fb; font-family: Arial, Helvetica, sans-serif; color:#172033;">
     <div style="display:none; max-height:0; overflow:hidden;">${escapeHtml(subject)}</div>
-    <div style="max-width:720px; margin:0 auto; padding:28px 16px;">
+    <div style="max-width:860px; margin:0 auto; padding:28px 16px;">
       <div style="background:#ffffff; border:1px solid #d8e3ef; border-radius:12px; overflow:hidden;">
         <div style="background:#0b2a5b; padding:22px 28px;">
           ${logoUrl ? `<img src="${escapeHtml(logoUrl)}" alt="ByExpress" style="display:block; max-width:210px; height:auto;" />` : `<div style="font-size:30px; font-weight:700;"><span style="color:#f05a3f;">By</span><span style="color:#ffffff;">Express</span></div>`}
@@ -90,8 +104,9 @@ export const buildQuotationRequestEmail = (data) => {
           <p style="font-size:16px; line-height:1.5; margin:0 0 24px;">Can i have your best price and service option for the transport below?</p>
 
           <div style="border:1px solid #e2e8f0; border-radius:10px; background:#f8fafc; padding:18px 20px; margin:0 0 22px;">
-            <div style="font-size:12px; font-weight:700; color:#64748b; text-transform:uppercase; margin-bottom:4px;">Load order</div>
-            <div style="font-size:24px; font-weight:800; color:#0b2a5b;">${escapeHtml(data.loadOrder)}</div>
+            <div style="font-size:16px; line-height:1.4; font-weight:700; color:#64748b; text-transform:uppercase;">
+              Load order: <span style="font-size:24px; font-weight:800; color:#0b2a5b; text-transform:none;">${escapeHtml(data.loadOrder)}</span>
+            </div>
           </div>
 
           <table role="presentation" cellspacing="0" cellpadding="0" style="width:100%; border-collapse:collapse; margin:0 0 22px;">
@@ -115,6 +130,11 @@ export const buildQuotationRequestEmail = (data) => {
             <div style="font-size:12px; font-weight:700; color:#2563eb; text-transform:uppercase; margin-bottom:8px;">Goods</div>
             <div style="font-size:15px; line-height:1.6;">${formatGoodsLine(data.goods)}</div>
           </div>
+
+          ${observations ? `<div style="border:1px solid #e2e8f0; border-radius:10px; padding:16px; margin:0 0 24px;">
+            <div style="font-size:12px; font-weight:700; color:#2563eb; text-transform:uppercase; margin-bottom:8px;">Observations</div>
+            <div style="font-size:15px; line-height:1.6; white-space:pre-line;">${escapeHtml(observations)}</div>
+          </div>` : ""}
 
           <p style="font-size:16px; line-height:1.5; margin:0 0 24px;">Thank you for your answer.</p>
 
