@@ -2,6 +2,7 @@ import { Router } from "express";
 import jwt from "jsonwebtoken";
 import { supabase } from "../SupabaseClient/supabaseClient.js";
 import { enqueueEmailJob, enqueueEmailJobs } from "../services/emailQueueService.js";
+import { sendEmail } from "../services/emailSenderService.js";
 
 export const dbRouter = Router();
 
@@ -98,6 +99,36 @@ const toQuotationResponse = (quotation, goods, users = []) => ({
 
 const normalizeAdminRole = (adminRole) => {
     return adminRole === true || adminRole === "true" || adminRole === "Admin";
+};
+
+const escapeHtml = (value) => {
+    return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+};
+
+const getPublicBaseUrl = (req) => {
+    return process.env.PUBLIC_BACKEND_URL || `${req.protocol}://${req.get("host")}`;
+};
+
+const createUnsubscribeUrl = (req, company) => {
+    if (!process.env.ACCESS_TOKEN_SECRET) {
+        throw new Error("ACCESS_TOKEN_SECRET is not configured");
+    }
+
+    const token = jwt.sign(
+        {
+            companyId: company.id,
+            emailAddress: company.emailAddress,
+            purpose: "unsubscribe",
+        },
+        process.env.ACCESS_TOKEN_SECRET
+    );
+
+    return `${getPublicBaseUrl(req)}/unsubscribe?token=${encodeURIComponent(token)}`;
 };
 
 dbRouter.post("/signIn", async (req, res) => {
@@ -252,12 +283,106 @@ dbRouter.post("/deleteUser", async (req, res) => {
     res.json(true);
 });
 
+dbRouter.get("/unsubscribe", async (req, res) => {
+    const { token } = req.query;
+
+    if (!token || !process.env.ACCESS_TOKEN_SECRET) {
+        return res.status(400).send("Invalid unsubscribe link.");
+    }
+
+    let payload;
+
+    try {
+        payload = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+    } catch {
+        return res.status(400).send("Invalid or expired unsubscribe link.");
+    }
+
+    if (payload.purpose !== "unsubscribe" || !payload.companyId) {
+        return res.status(400).send("Invalid unsubscribe link.");
+    }
+
+    const { data: company, error: companyError } = await supabase
+        .from("Companies")
+        .select("id, name, emailAddress, unsubscribed")
+        .eq("id", payload.companyId)
+        .maybeSingle();
+
+    if (companyError) {
+        return res.status(500).send("Unable to process unsubscribe request.");
+    }
+
+    if (!company) {
+        return res.status(404).send("Company not found.");
+    }
+
+    if (!company.unsubscribed) {
+        const { error: updateError } = await supabase
+            .from("Companies")
+            .update({ unsubscribed: true })
+            .eq("id", company.id);
+
+        if (updateError) {
+            return res.status(500).send("Unable to unsubscribe this email address.");
+        }
+    }
+
+    if (process.env.SES_FROM_EMAIL) {
+        try {
+            const companyName = company.name || "Unknown";
+
+            await sendEmail({
+                to: process.env.SES_FROM_EMAIL,
+                subject: `Unsubscribe request: ${company.emailAddress}`,
+                text: [
+                    "A company unsubscribed from ByExpress transport offers.",
+                    "",
+                    `Company: ${companyName}`,
+                    `Email: ${company.emailAddress}`,
+                    `Company ID: ${company.id}`,
+                ].join("\n"),
+                html: `
+                    <p>A company unsubscribed from ByExpress transport offers.</p>
+                    <p><strong>Company:</strong> ${escapeHtml(companyName)}</p>
+                    <p><strong>Email:</strong> ${escapeHtml(company.emailAddress)}</p>
+                    <p><strong>Company ID:</strong> ${escapeHtml(company.id)}</p>
+                `,
+            });
+        } catch (notificationError) {
+            console.error("Failed to send unsubscribe notification", notificationError);
+        }
+    }
+
+    res.send(`
+        <!doctype html>
+        <html>
+            <head>
+                <meta charset="utf-8" />
+                <meta name="viewport" content="width=device-width, initial-scale=1" />
+                <title>Unsubscribed</title>
+                <style>
+                    body { margin: 0; font-family: Arial, Helvetica, sans-serif; background: #f4f7fb; color: #172033; }
+                    .card { max-width: 560px; margin: 80px auto; background: #ffffff; border: 1px solid #d8e3ef; border-radius: 12px; padding: 32px; text-align: center; }
+                    h1 { margin: 0 0 12px; color: #0b2a5b; }
+                    p { margin: 0; line-height: 1.5; }
+                </style>
+            </head>
+            <body>
+                <div class="card">
+                    <h1>You have been unsubscribed</h1>
+                    <p>${escapeHtml(company.emailAddress)} will no longer receive ByExpress transport offers.</p>
+                </div>
+            </body>
+        </html>
+    `);
+});
+
 dbRouter.get("/getAllCompanies", async (req, res) => {
     if (!requireAdmin(req, res)) return;
 
     const { data, error } = await supabase
         .from("Companies")
-        .select("id, name, country, fiscalCode, emailAddress, created_at, threeTonnCategory, sevenTonnCategory")
+        .select("id, name, country, fiscalCode, emailAddress, created_at, threeTonnCategory, sevenTonnCategory, unsubscribed")
         .order("created_at", { ascending: false });
 
     if (error) {
@@ -392,7 +517,8 @@ dbRouter.post("/queueCompanyEmailCampaign", async (req, res) => {
 
     let query = supabase
         .from("Companies")
-        .select("id, name, emailAddress, threeTonnCategory, sevenTonnCategory");
+        .select("id, name, emailAddress, threeTonnCategory, sevenTonnCategory, unsubscribed")
+        .or("unsubscribed.is.false,unsubscribed.is.null");
 
     if (companyIds.length) {
         query = query.in("id", companyIds);
@@ -425,6 +551,7 @@ dbRouter.post("/queueCompanyEmailCampaign", async (req, res) => {
             templateData: {
                 ...templateData,
                 observations: observations ?? templateData.observations ?? "",
+                unsubscribeUrl: createUnsubscribeUrl(req, company),
                 company,
             },
             metadata: {
