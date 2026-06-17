@@ -93,7 +93,7 @@ export const buildQuotationRequestEmail = (data) => {
 <html>
   <body style="margin:0; padding:0; background:#f4f7fb; font-family: Arial, Helvetica, sans-serif; color:#172033;">
     <div style="display:none; max-height:0; overflow:hidden;">${escapeHtml(subject)}</div>
-    <div style="max-width:860px; margin:0 auto; padding:28px 16px;">
+    <div style="max-width:1020px; margin:0 auto; padding:28px 16px;">
       <div style="background:#ffffff; border:1px solid #d8e3ef; border-radius:12px; overflow:hidden;">
         <div style="background:#0b2a5b; padding:22px 28px;">
           ${logoUrl ? `<img src="${escapeHtml(logoUrl)}" alt="ByExpress" style="display:block; max-width:210px; height:auto;" />` : `<div style="font-size:30px; font-weight:700;"><span style="color:#f05a3f;">By</span><span style="color:#ffffff;">Express</span></div>`}
