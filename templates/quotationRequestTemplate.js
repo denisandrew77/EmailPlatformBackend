@@ -1,99 +1,99 @@
 const escapeHtml = (value) => {
-    return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 };
 
 const formatDate = (dateValue) => {
-    if (!dateValue) return "";
+  if (!dateValue) return "";
 
-    const date = new Date(dateValue);
-    if (!Number.isNaN(date.getTime())) {
-        return `${String(date.getDate()).padStart(2, "0")}.${String(date.getMonth() + 1).padStart(2, "0")}.${String(date.getFullYear()).slice(-2)}`;
-    }
+  const date = new Date(dateValue);
+  if (!Number.isNaN(date.getTime())) {
+    return `${String(date.getDate()).padStart(2, "0")}.${String(date.getMonth() + 1).padStart(2, "0")}.${String(date.getFullYear()).slice(-2)}`;
+  }
 
-    return String(dateValue);
+  return String(dateValue);
 };
 
 const formatLocation = (location = {}) => {
-    const country = escapeHtml(location.country);
-    const postalCode = escapeHtml(location.postalCode);
-    const city = escapeHtml(location.city);
-    const date = escapeHtml(formatDate(location.date));
-    const time = escapeHtml(location.time);
+  const country = escapeHtml(location.country);
+  const postalCode = escapeHtml(location.postalCode);
+  const city = escapeHtml(location.city);
+  const date = escapeHtml(formatDate(location.date));
+  const time = escapeHtml(location.time);
 
-    return `${country}-${postalCode} - ${city} - ${date} - ${time}`;
+  return `${country}-${postalCode} - ${city} - ${date} - ${time}`;
 };
 
 const buildSubject = (data) => {
-    const loadingCountry = data.loading?.country ?? "";
-    const loadingPostalCode = data.loading?.postalCode ?? "";
-    const deliveryCountry = data.delivery?.country ?? "";
-    const deliveryPostalCode = data.delivery?.postalCode ?? "";
+  const loadingCountry = data.loading?.country ?? "";
+  const loadingPostalCode = data.loading?.postalCode ?? "";
+  const deliveryCountry = data.delivery?.country ?? "";
+  const deliveryPostalCode = data.delivery?.postalCode ?? "";
 
-    return `Transport from ${loadingCountry} ${loadingPostalCode} to ${deliveryCountry} ${deliveryPostalCode}`;
+  return `Transport from ${loadingCountry} ${loadingPostalCode} to ${deliveryCountry} ${deliveryPostalCode}`;
 };
 
 const formatGoodsLine = (goods = []) => {
-    const totalWeight = goods.reduce((sum, good) => sum + Number(good.weight || 0), 0);
-    const totalNumber = goods.reduce((sum, good) => sum + Number(good.number || 0), 0);
-    const firstGood = goods[0] ?? {};
-    const goodsType = totalNumber === 1 ? escapeHtml(firstGood.type || "Pallet") : escapeHtml(firstGood.type || "Pallets");
-    const stackText = goods.some((good) => good.stack) ? "yes" : "no";
+  const totalWeight = goods.reduce((sum, good) => sum + Number(good.weight || 0), 0);
+  const totalNumber = goods.reduce((sum, good) => sum + Number(good.number || 0), 0);
+  const firstGood = goods[0] ?? {};
+  const goodsType = totalNumber === 1 ? escapeHtml(firstGood.type || "Pallet") : escapeHtml(firstGood.type || "Pallets");
+  const stackText = goods.some((good) => good.stack) ? "yes" : "no";
 
-    return `${totalWeight} kgs - ${totalNumber} ${goodsType} - ${escapeHtml(firstGood.length)} x ${escapeHtml(firstGood.width)} x ${escapeHtml(firstGood.height)} (LxWxH) - stack - ${stackText}`;
+  return `${totalWeight} kgs - ${totalNumber} ${goodsType} - ${escapeHtml(firstGood.length)} x ${escapeHtml(firstGood.width)} x ${escapeHtml(firstGood.height)} (LxWxH) - stack - ${stackText}`;
 };
 
 const getObservations = (data) => {
-    return String(data.observations ?? data.observation ?? data.remarks ?? "").trim();
+  return String(data.observations ?? data.observation ?? data.remarks ?? "").trim();
 };
 
 const buildText = (data) => {
-    const observations = getObservations(data);
-    const lines = [
-        "Hello,",
-        "",
-        "Can i have your best price and service option for:",
-        "",
-        `Load Order: ${data.loadOrder}`,
-        "",
-        `Loading: ${formatLocation(data.loading)}`,
-        "",
-        `Delivery: ${formatLocation(data.delivery)}`,
-        "",
-        "Goods:",
-        formatGoodsLine(data.goods),
-    ];
+  const observations = getObservations(data);
+  const lines = [
+    "Hello,",
+    "",
+    "Can i have your best price and service option for:",
+    "",
+    `Load Order: ${data.loadOrder}`,
+    "",
+    `Loading: ${formatLocation(data.loading)}`,
+    "",
+    `Delivery: ${formatLocation(data.delivery)}`,
+    "",
+    "Goods:",
+    formatGoodsLine(data.goods),
+  ];
 
-    if (observations) {
-        lines.push("", "Observations:", observations);
-    }
+  if (observations) {
+    lines.push("", "Observations:", observations);
+  }
 
-    return [
-        ...lines,
-        "",
-        "Thank you for your answer.",
-        "",
-        "Best regards,",
-        "ByExpress Spain & France",
-    ].join("\n");
+  return [
+    ...lines,
+    "",
+    "Thank you for your answer.",
+    "",
+    "Best regards,",
+    "ByExpress Spain & France",
+  ].join("\n");
 };
 
 export const buildQuotationRequestEmail = (data) => {
-    const logoUrl = process.env.BYEXPRESS_LOGO_URL;
-    const subject = data.subject ?? buildSubject(data);
-    const text = buildText(data);
-    const observations = getObservations(data);
+  const logoUrl = process.env.BYEXPRESS_LOGO_URL;
+  const subject = data.subject ?? buildSubject(data);
+  const text = buildText(data);
+  const observations = getObservations(data);
 
-    const html = `
+  const html = `
 <!doctype html>
 <html>
   <body style="margin:0; padding:0; background:#f4f7fb; font-family: Arial, Helvetica, sans-serif; color:#172033;">
     <div style="display:none; max-height:0; overflow:hidden;">${escapeHtml(subject)}</div>
-    <div style="max-width:1020px; margin:0 auto; padding:28px 16px;">
+    <div style="max-width:1120px; margin:0 auto; padding:28px 16px;">
       <div style="background:#ffffff; border:1px solid #d8e3ef; border-radius:12px; overflow:hidden;">
         <div style="background:#0b2a5b; padding:22px 28px;">
           ${logoUrl ? `<img src="${escapeHtml(logoUrl)}" alt="ByExpress" style="display:block; max-width:210px; height:auto;" />` : `<div style="font-size:30px; font-weight:700;"><span style="color:#f05a3f;">By</span><span style="color:#ffffff;">Express</span></div>`}
@@ -148,9 +148,9 @@ export const buildQuotationRequestEmail = (data) => {
   </body>
 </html>`;
 
-    return {
-        subject,
-        text,
-        html,
-    };
+  return {
+    subject,
+    text,
+    html,
+  };
 };
