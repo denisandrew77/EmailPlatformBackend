@@ -37,14 +37,28 @@ const buildSubject = (data) => {
   return `Transport from ${loadingCountry} ${loadingPostalCode} to ${deliveryCountry} ${deliveryPostalCode}`;
 };
 
-const formatGoodsLine = (goods = []) => {
-  const totalWeight = goods.reduce((sum, good) => sum + Number(good.weight || 0), 0);
-  const totalNumber = goods.reduce((sum, good) => sum + Number(good.number || 0), 0);
-  const firstGood = goods[0] ?? {};
-  const goodsType = totalNumber === 1 ? escapeHtml(firstGood.type || "Pallet") : escapeHtml(firstGood.type || "Pallets");
-  const stackText = goods.some((good) => good.stack) ? "yes" : "no";
+const formatGoodTextLine = (good = {}) => {
+  const stackText = good.stack ? "yes" : "no";
 
-  return `${totalWeight} kgs - ${totalNumber} ${goodsType} - ${escapeHtml(firstGood.length)} x ${escapeHtml(firstGood.width)} x ${escapeHtml(firstGood.height)} (LxWxH) - stack - ${stackText}`;
+  return `${Number(good.weight || 0)} kgs - ${Number(good.number || 0)} ${good.type || "Goods"} - ${good.length || 0} x ${good.width || 0} x ${good.height || 0} (LxWxH) - stack - ${stackText}`;
+};
+
+const formatGoodsTextLines = (goods = []) => {
+  return goods.length ? goods.map(formatGoodTextLine) : ["No goods registered"];
+};
+
+const formatGoodHtmlLine = (good = {}) => {
+  return escapeHtml(formatGoodTextLine(good));
+};
+
+const formatGoodsHtml = (goods = []) => {
+  if (!goods.length) {
+    return `<div style="font-size:15px; line-height:1.6;">No goods registered</div>`;
+  }
+
+  return goods
+    .map((good, index) => `<div style="font-size:15px; line-height:1.6; ${index === 0 ? "" : "margin-top:8px;"}">${formatGoodHtmlLine(good)}</div>`)
+    .join("");
 };
 
 const getObservations = (data) => {
@@ -65,7 +79,7 @@ const buildText = (data) => {
     `Delivery: ${formatLocation(data.delivery)}`,
     "",
     "Goods:",
-    formatGoodsLine(data.goods),
+    ...formatGoodsTextLines(data.goods),
   ];
 
   if (observations) {
@@ -128,7 +142,7 @@ export const buildQuotationRequestEmail = (data) => {
 
           <div style="border:1px solid #e2e8f0; border-radius:10px; padding:16px; margin:0 0 24px;">
             <div style="font-size:12px; font-weight:700; color:#2563eb; text-transform:uppercase; margin-bottom:8px;">Goods</div>
-            <div style="font-size:15px; line-height:1.6;">${formatGoodsLine(data.goods)}</div>
+            ${formatGoodsHtml(data.goods)}
           </div>
 
           ${observations ? `<div style="border:1px solid #e2e8f0; border-radius:10px; padding:16px; margin:0 0 24px;">
