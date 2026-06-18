@@ -40,7 +40,7 @@ const buildSubject = (data) => {
 const formatGoodTextLine = (good = {}) => {
   const stackText = good.stack ? "yes" : "no";
 
-  return `${Number(good.weight || 0)} kgs - ${Number(good.number || 0)} ${good.type || "Goods"} - ${good.length || 0} x ${good.width || 0} x ${good.height || 0} (LxWxH) - stack - ${stackText}`;
+  return `${Number(good.number || 0)} ${good.type || "Goods"} - ${good.length || 0} x ${good.width || 0} x ${good.height || 0} (LxWxH) - ${Number(good.weight || 0)} kgs - stack - ${stackText}`;
 };
 
 const formatGoodsTextLines = (goods = []) => {
