@@ -61,6 +61,10 @@ const quotationCategoriesToTypeList = (quotation) => {
         categories.push("7.5T Truck - 24T Truck");
     }
 
+    if (quotation.caddyCategory) {
+        categories.push("Caddy");
+    }
+
     return categories;
 };
 
@@ -382,7 +386,7 @@ dbRouter.get("/getAllCompanies", async (req, res) => {
 
     const { data, error } = await supabase
         .from("Companies")
-        .select("id, name, country, fiscalCode, emailAddress, created_at, threeTonnCategory, sevenTonnCategory, unsubscribed")
+        .select("id, name, country, fiscalCode, emailAddress, created_at, threeTonnCategory, sevenTonnCategory, caddyCategory, unsubscribed")
         .order("created_at", { ascending: false });
 
     if (error) {
@@ -402,6 +406,7 @@ dbRouter.post("/addCompany", async (req, res) => {
         emailAddress,
         threeTonnCategory = false,
         sevenTonnCategory = false,
+        caddyCategory = false,
     } = req.body;
 
     if (!name || !country || !fiscalCode || !emailAddress) {
@@ -417,6 +422,7 @@ dbRouter.post("/addCompany", async (req, res) => {
             emailAddress,
             threeTonnCategory: Boolean(threeTonnCategory),
             sevenTonnCategory: Boolean(sevenTonnCategory),
+            caddyCategory: Boolean(caddyCategory),
         });
 
     if (error) {
@@ -437,6 +443,7 @@ dbRouter.post("/editCompany", async (req, res) => {
         emailAddress,
         threeTonnCategory = false,
         sevenTonnCategory = false,
+        caddyCategory = false,
     } = req.body;
 
     if (!id || !name || !country || !fiscalCode || !emailAddress) {
@@ -452,6 +459,7 @@ dbRouter.post("/editCompany", async (req, res) => {
             emailAddress,
             threeTonnCategory: Boolean(threeTonnCategory),
             sevenTonnCategory: Boolean(sevenTonnCategory),
+            caddyCategory: Boolean(caddyCategory),
         })
         .eq("id", id);
 
@@ -509,6 +517,7 @@ dbRouter.post("/queueCompanyEmailCampaign", async (req, res) => {
         companyIds = [],
         threeTonnCategory = false,
         sevenTonnCategory = false,
+        caddyCategory = false,
     } = req.body;
 
     if (!template && (!subject || (!text && !html))) {
@@ -517,18 +526,23 @@ dbRouter.post("/queueCompanyEmailCampaign", async (req, res) => {
 
     let query = supabase
         .from("Companies")
-        .select("id, name, emailAddress, threeTonnCategory, sevenTonnCategory, unsubscribed")
+        .select("id, name, emailAddress, threeTonnCategory, sevenTonnCategory, caddyCategory, unsubscribed")
         .or("unsubscribed.is.false,unsubscribed.is.null");
 
     if (companyIds.length) {
         query = query.in("id", companyIds);
-    } else if (threeTonnCategory || sevenTonnCategory) {
-        if (threeTonnCategory && sevenTonnCategory) {
-            query = query.or("threeTonnCategory.eq.true,sevenTonnCategory.eq.true");
-        } else if (threeTonnCategory) {
-            query = query.eq("threeTonnCategory", true);
-        } else if (sevenTonnCategory) {
-            query = query.eq("sevenTonnCategory", true);
+    } else if (threeTonnCategory || sevenTonnCategory || caddyCategory) {
+        const selectedCategoryFilters = [
+            threeTonnCategory ? "threeTonnCategory.eq.true" : null,
+            sevenTonnCategory ? "sevenTonnCategory.eq.true" : null,
+            caddyCategory ? "caddyCategory.eq.true" : null,
+        ].filter(Boolean);
+
+        if (selectedCategoryFilters.length === 1) {
+            const [column] = selectedCategoryFilters[0].split(".");
+            query = query.eq(column, true);
+        } else {
+            query = query.or(selectedCategoryFilters.join(","));
         }
     }
 
@@ -585,6 +599,7 @@ dbRouter.post("/addQuotation", async (req, res) => {
         goods = [],
         threeTonnCategory = false,
         sevenTonnCategory = false,
+        caddyCategory = false,
         observations = "",
     } = req.body;
 
@@ -623,6 +638,7 @@ dbRouter.post("/addQuotation", async (req, res) => {
             receiverTime,
             threeTonnCategory: Boolean(threeTonnCategory),
             sevenTonnCategory: Boolean(sevenTonnCategory),
+            caddyCategory: Boolean(caddyCategory),
             observations,
         });
 
