@@ -6,6 +6,7 @@ import cookieParser from "cookie-parser";
 import { fileURLToPath } from "url";
 import { dbRouter } from "./endpoints/dbService.js";
 import { startEmailWorker } from "./workers/emailWorker.js";
+import { startEmailFeedbackWorker } from "./workers/emailFeedbackWorker.js";
 
 dotenv.config();
 
@@ -32,4 +33,8 @@ app.listen(PORT, () => {
 
 if (process.env.RUN_EMAIL_WORKER_IN_API === "true") {
     startEmailWorker();
+}
+
+if (process.env.RUN_EMAIL_FEEDBACK_WORKER_IN_API === "true") {
+    startEmailFeedbackWorker();
 }

@@ -8,7 +8,9 @@
     "start": "node app.js",
     "dev": "nodemon app.js",
     "worker:email": "node workers/emailWorker.js",
-    "dev:worker:email": "nodemon workers/emailWorker.js"
+    "dev:worker:email": "nodemon workers/emailWorker.js",
+    "worker:feedback": "node workers/emailFeedbackWorker.js",
+    "dev:worker:feedback": "nodemon workers/emailFeedbackWorker.js"
   },
   "keywords": [],
   "author": "",
