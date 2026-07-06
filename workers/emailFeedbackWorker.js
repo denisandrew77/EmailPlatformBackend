@@ -79,6 +79,21 @@ const getFeedbackEmails = (notification) => {
     return [];
 };
 
+const getSuppressionReason = (notification) => {
+    if (notification?.notificationType === "Complaint") {
+        return "Complaint";
+    }
+
+    if (
+        notification?.notificationType === "Bounce" &&
+        notification.bounce?.bounceType === "Permanent"
+    ) {
+        return "Permanent bounce";
+    }
+
+    return null;
+};
+
 const suppressCompanyEmails = async (emails, feedbackType) => {
     if (!emails.length) return 0;
 
@@ -127,7 +142,20 @@ const processMessage = async (message) => {
     }
 
     const emails = getFeedbackEmails(notification);
-    await suppressCompanyEmails(emails, feedbackType);
+    const suppressionReason = getSuppressionReason(notification);
+
+    if (!suppressionReason) {
+        const bounceType = notification.bounce?.bounceType ?? "Unknown";
+        const bounceSubType = notification.bounce?.bounceSubType ?? "Unknown";
+
+        console.info(
+            `SES ${bounceType}/${bounceSubType} bounce recorded without suppression for: ${emails.join(", ") || "unknown recipient"}`
+        );
+        await deleteMessage(message.ReceiptHandle);
+        return;
+    }
+
+    await suppressCompanyEmails(emails, suppressionReason);
     await deleteMessage(message.ReceiptHandle);
 };
 
