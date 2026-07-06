@@ -1,5 +1,7 @@
 import dotenv from "dotenv";
 import { DeleteMessageCommand, ReceiveMessageCommand } from "@aws-sdk/client-sqs";
+import { fileURLToPath } from "url";
+import path from "path";
 import { sqsClient } from "../aws/awsClients.js";
 import { supabase } from "../SupabaseClient/supabaseClient.js";
 
@@ -180,6 +182,10 @@ export const startEmailFeedbackWorker = async () => {
     }
 };
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const isDirectExecution = process.argv[1]
+    ? fileURLToPath(import.meta.url) === path.resolve(process.argv[1])
+    : false;
+
+if (isDirectExecution) {
     startEmailFeedbackWorker();
 }
