@@ -6,25 +6,19 @@ import { sendEmail } from "../services/emailSenderService.js";
 
 export const dbRouter = Router();
 
-const getAuthorizedUserName = (req) => {
-    if (req.body?.userName) return req.body.userName;
+const getAccessToken = (req) => {
+    const authorization = req.headers.authorization;
+    if (!authorization) return null;
 
-    const token = req.headers.authorization;
-    if (!token) return null;
+    const [scheme, credentials] = authorization.trim().split(/\s+/);
+    if (scheme?.toLowerCase() === "bearer") return credentials || null;
 
-    if (process.env.ACCESS_TOKEN_SECRET) {
-        try {
-            return jwt.verify(token, process.env.ACCESS_TOKEN_SECRET).userName;
-        } catch {
-            return null;
-        }
-    }
-
-    return jwt.decode(token)?.userName ?? null;
+    // Keep accepting existing clients that send the raw JWT during migration.
+    return authorization.trim();
 };
 
 const getAuthorizedUser = (req) => {
-    const token = req.headers.authorization;
+    const token = getAccessToken(req);
     if (!token || !process.env.ACCESS_TOKEN_SECRET) return null;
 
     try {
@@ -34,6 +28,19 @@ const getAuthorizedUser = (req) => {
     }
 };
 
+const requireAuthenticatedUser = (req, res, next) => {
+    const user = getAuthorizedUser(req);
+
+    if (!user) {
+        return res.status(401).json({ error: "Missing, invalid, or expired user token" });
+    }
+
+    req.user = user;
+    next();
+};
+
+const getAuthorizedUserName = (req) => req.user?.userName ?? getAuthorizedUser(req)?.userName ?? null;
+
 const requireAdmin = (req, res) => {
     const user = getAuthorizedUser(req);
 
@@ -42,7 +49,7 @@ const requireAdmin = (req, res) => {
         return false;
     }
 
-    if (user.adminRole !== true) {
+    if (!normalizeAdminRole(user.adminRole)) {
         res.status(403).json({ error: "Admin rights required" });
         return false;
     }
@@ -583,7 +590,7 @@ dbRouter.post("/queueCompanyEmailCampaign", async (req, res) => {
     }
 });
 
-dbRouter.post("/addQuotation", async (req, res) => {
+dbRouter.post("/addQuotation", requireAuthenticatedUser, async (req, res) => {
     const {
         quotationNumber,
         senderPostalCode,
@@ -674,7 +681,7 @@ dbRouter.post("/addQuotation", async (req, res) => {
     });
 });
 
-dbRouter.get("/getAllQuotations", async (req, res) => {
+dbRouter.get("/getAllQuotations", requireAuthenticatedUser, async (req, res) => {
     const { data: quotations, error: quotationsError } = await supabase
         .from("Quotations")
         .select("*")
@@ -703,7 +710,7 @@ dbRouter.get("/getAllQuotations", async (req, res) => {
     res.json(quotations.map((quotation) => toQuotationResponse(quotation, goods, users)));
 });
 
-dbRouter.get("/getLastNumber", async (req, res) => {
+dbRouter.get("/getLastNumber", requireAuthenticatedUser, async (req, res) => {
     const { data, error } = await supabase
         .from("Quotations")
         .select("id")
