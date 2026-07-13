@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import { supabase } from "../SupabaseClient/supabaseClient.js";
 import { enqueueEmailJob, enqueueEmailJobs } from "../services/emailQueueService.js";
 import { sendEmail } from "../services/emailSenderService.js";
+import { hashPassword, isPasswordHash, verifyPassword } from "../services/passwordService.js";
 
 export const dbRouter = Router();
 
@@ -17,19 +18,30 @@ const getAccessToken = (req) => {
     return authorization.trim();
 };
 
-const getAuthorizedUser = (req) => {
+const getAuthorizedUser = async (req) => {
     const token = getAccessToken(req);
     if (!token || !process.env.ACCESS_TOKEN_SECRET) return null;
 
     try {
-        return jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+        const payload = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+        if (!payload?.id) return null;
+
+        const { data: user, error } = await supabase
+            .from("Users")
+            .select("id, userName, adminRole")
+            .eq("id", payload.id)
+            .maybeSingle();
+
+        if (error || !user) return null;
+
+        return { token, payload, user };
     } catch {
         return null;
     }
 };
 
-const requireAuthenticatedUser = (req, res, next) => {
-    const user = getAuthorizedUser(req);
+const requireAuthenticatedUser = async (req, res, next) => {
+    const user = await getAuthorizedUser(req);
 
     if (!user) {
         return res.status(401).json({ error: "Missing, invalid, or expired user token" });
@@ -39,21 +51,28 @@ const requireAuthenticatedUser = (req, res, next) => {
     next();
 };
 
-const getAuthorizedUserName = (req) => req.user?.userName ?? getAuthorizedUser(req)?.userName ?? null;
+const requireInternalUser = (req, res, next) => {
+    if (!req.user) {
+        return res.status(403).json({ error: "Internal application access required" });
+    }
 
-const requireAdmin = (req, res) => {
-    const user = getAuthorizedUser(req);
+    next();
+};
+
+const requireAdmin = async (req, res) => {
+    const user = await getAuthorizedUser(req);
 
     if (!user) {
         res.status(401).json({ error: "Missing or invalid user token" });
         return false;
     }
 
-    if (!normalizeAdminRole(user.adminRole)) {
+    if (!normalizeAdminRole(user.user.adminRole)) {
         res.status(403).json({ error: "Admin rights required" });
         return false;
     }
 
+    req.user = user;
     return true;
 };
 
@@ -145,44 +164,63 @@ const createUnsubscribeUrl = (req, company) => {
 dbRouter.post("/signIn", async (req, res) => {
     const { userName, password } = req.body;
 
-    const { data: user, error } = await supabase
-        .from("Users")
-        .select("id, userName, password, adminRole")
-        .eq("userName", userName)
-        .eq("password", password)
-        .maybeSingle();
-
-    if (error) {
-        return res.status(500).json({ error: error.message });
-    }
-
-    if (!user) {
-        return res.json(JSON.stringify(false));
-    }
-
     if (!process.env.ACCESS_TOKEN_SECRET) {
         return res.status(500).json({ error: "ACCESS_TOKEN_SECRET is not configured" });
     }
 
-    const token = jwt.sign(
-        {
-            userId: user.id,
+    if (typeof userName !== "string" || typeof password !== "string") {
+        return res.status(400).json({ error: "Username and password are required" });
+    }
+
+    const { data: user, error } = await supabase
+        .from("Users")
+        .select("*")
+        .eq("userName", userName)
+        .maybeSingle();
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    if (!user || !verifyPassword(password, user.password)) {
+        return res.status(401).json(false);
+    }
+
+    if (!isPasswordHash(user.password)) {
+        await supabase
+            .from("Users")
+            .update({ password: hashPassword(password) })
+            .eq("id", user.id);
+    }
+
+    const token = jwt.sign({
+        id: user.id,
+        userName: user.userName,
+        adminRole: user.adminRole,
+    }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: "8h" });
+
+    res.json({
+        token,
+        user: {
+            id: user.id,
             userName: user.userName,
             adminRole: user.adminRole,
         },
-        process.env.ACCESS_TOKEN_SECRET,
-        { expiresIn: "10h" }
-    );
+    });
+});
 
-    res.json({ token });
+dbRouter.get("/api/v1/auth/me", requireAuthenticatedUser, async (req, res) => {
+    res.json({
+        id: req.user.user.id,
+        userName: req.user.user.userName,
+        adminRole: req.user.user.adminRole,
+    });
 });
 
 dbRouter.get("/getAllUsers", async (req, res) => {
-    if (!requireAdmin(req, res)) return;
+    if (!(await requireAdmin(req, res))) return;
 
     const { data, error } = await supabase
         .from("Users")
-        .select("id, userName, password, adminRole")
+        .select("id, userName, adminRole")
         .order("id", { ascending: true });
 
     if (error) {
@@ -193,33 +231,20 @@ dbRouter.get("/getAllUsers", async (req, res) => {
 });
 
 const handleCreateUser = async (req, res) => {
-    if (!requireAdmin(req, res)) return;
+    if (!(await requireAdmin(req, res))) return;
 
-    const { newUserName, password, adminRole = false } = req.body;
+    const { newUserName, userName, password, adminRole = false } = req.body;
+    const normalizedUserName = newUserName ?? userName;
 
-    if (!newUserName || !password) {
+    if (!normalizedUserName || typeof password !== "string" || password.length < 8) {
         return res.status(400).json(false);
-    }
-
-    const { data: existingUser, error: existingUserError } = await supabase
-        .from("Users")
-        .select("id")
-        .eq("userName", newUserName)
-        .maybeSingle();
-
-    if (existingUserError) {
-        return res.status(500).json({ error: existingUserError.message });
-    }
-
-    if (existingUser) {
-        return res.json(false);
     }
 
     const { error } = await supabase
         .from("Users")
         .insert({
-            userName: newUserName,
-            password,
+            userName: normalizedUserName,
+            password: hashPassword(password),
             adminRole: normalizeAdminRole(adminRole),
         });
 
@@ -234,47 +259,34 @@ dbRouter.post("/addUser", handleCreateUser);
 dbRouter.post("/createUser", handleCreateUser);
 
 dbRouter.post("/editUser", async (req, res) => {
-    if (!requireAdmin(req, res)) return;
+    if (!(await requireAdmin(req, res))) return;
 
-    const { id, newUsername, password, adminRole = false } = req.body;
+    const { id, newUsername, userName, password, adminRole = false } = req.body;
+    const normalizedUserName = newUsername ?? userName;
 
-    if (!id || !newUsername || !password) {
+    if (!id || !normalizedUserName || (password && password.length < 8)) {
         return res.status(400).json(false);
     }
 
-    const { data: existingUser, error: existingUserError } = await supabase
-        .from("Users")
-        .select("id")
-        .eq("userName", newUsername)
-        .neq("id", id)
-        .maybeSingle();
+    const updates = {
+        userName: normalizedUserName,
+        adminRole: normalizeAdminRole(adminRole),
+    };
 
-    if (existingUserError) {
-        return res.status(500).json({ error: existingUserError.message });
-    }
-
-    if (existingUser) {
-        return res.json(false);
-    }
+    if (password) updates.password = hashPassword(password);
 
     const { error } = await supabase
         .from("Users")
-        .update({
-            userName: newUsername,
-            password,
-            adminRole: normalizeAdminRole(adminRole),
-        })
+        .update(updates)
         .eq("id", id);
 
-    if (error) {
-        return res.status(500).json({ error: error.message });
-    }
+    if (error) return res.status(500).json({ error: error.message });
 
     res.json(true);
 });
 
 dbRouter.post("/deleteUser", async (req, res) => {
-    if (!requireAdmin(req, res)) return;
+    if (!(await requireAdmin(req, res))) return;
 
     const { id } = req.body;
 
@@ -389,7 +401,7 @@ dbRouter.get("/unsubscribe", async (req, res) => {
 });
 
 dbRouter.get("/getAllCompanies", async (req, res) => {
-    if (!requireAdmin(req, res)) return;
+    if (!(await requireAdmin(req, res))) return;
 
     const { data, error } = await supabase
         .from("Companies")
@@ -404,7 +416,7 @@ dbRouter.get("/getAllCompanies", async (req, res) => {
 });
 
 dbRouter.post("/addCompany", async (req, res) => {
-    if (!requireAdmin(req, res)) return;
+    if (!(await requireAdmin(req, res))) return;
 
     const {
         name,
@@ -440,7 +452,7 @@ dbRouter.post("/addCompany", async (req, res) => {
 });
 
 dbRouter.post("/editCompany", async (req, res) => {
-    if (!requireAdmin(req, res)) return;
+    if (!(await requireAdmin(req, res))) return;
 
     const {
         id,
@@ -478,7 +490,7 @@ dbRouter.post("/editCompany", async (req, res) => {
 });
 
 dbRouter.post("/deleteCompany", async (req, res) => {
-    if (!requireAdmin(req, res)) return;
+    if (!(await requireAdmin(req, res))) return;
 
     const { id } = req.body;
 
@@ -499,7 +511,7 @@ dbRouter.post("/deleteCompany", async (req, res) => {
 });
 
 dbRouter.post("/queueEmail", async (req, res) => {
-    if (!requireAdmin(req, res)) return;
+    if (!(await requireAdmin(req, res))) return;
 
     const { to, subject, text, html, template, templateData, metadata = {} } = req.body;
 
@@ -512,7 +524,7 @@ dbRouter.post("/queueEmail", async (req, res) => {
 });
 
 dbRouter.post("/queueCompanyEmailCampaign", async (req, res) => {
-    if (!requireAdmin(req, res)) return;
+    if (!(await requireAdmin(req, res))) return;
 
     const {
         subject,
@@ -590,7 +602,7 @@ dbRouter.post("/queueCompanyEmailCampaign", async (req, res) => {
     }
 });
 
-dbRouter.post("/addQuotation", requireAuthenticatedUser, async (req, res) => {
+dbRouter.post("/addQuotation", requireAuthenticatedUser, requireInternalUser, async (req, res) => {
     const {
         quotationNumber,
         senderPostalCode,
@@ -612,27 +624,11 @@ dbRouter.post("/addQuotation", requireAuthenticatedUser, async (req, res) => {
 
     console.log("Add quotation observations present:", Boolean(String(observations).trim()));
 
-    const userName = getAuthorizedUserName(req);
-
-    if (!userName) {
-        return res.status(401).json({ error: "Missing or invalid user token" });
-    }
-
-    const { data: user, error: userError } = await supabase
-        .from("Users")
-        .select("id, userName")
-        .eq("userName", userName)
-        .single();
-
-    if (userError || !user) {
-        return res.status(401).json({ error: userError?.message ?? "User not found" });
-    }
-
     const { error: quotationError } = await supabase
         .from("Quotations")
         .insert({
             id: quotationNumber,
-            userId: user.id,
+            userId: req.user.user.id,
             senderPostalCode,
             senderCity,
             senderCountry,
@@ -681,7 +677,7 @@ dbRouter.post("/addQuotation", requireAuthenticatedUser, async (req, res) => {
     });
 });
 
-dbRouter.get("/getAllQuotations", requireAuthenticatedUser, async (req, res) => {
+dbRouter.get("/getAllQuotations", requireAuthenticatedUser, requireInternalUser, async (req, res) => {
     const { data: quotations, error: quotationsError } = await supabase
         .from("Quotations")
         .select("*")
@@ -710,7 +706,7 @@ dbRouter.get("/getAllQuotations", requireAuthenticatedUser, async (req, res) => 
     res.json(quotations.map((quotation) => toQuotationResponse(quotation, goods, users)));
 });
 
-dbRouter.get("/getLastNumber", requireAuthenticatedUser, async (req, res) => {
+dbRouter.get("/getLastNumber", requireAuthenticatedUser, requireInternalUser, async (req, res) => {
     const { data, error } = await supabase
         .from("Quotations")
         .select("id")
