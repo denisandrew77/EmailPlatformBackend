@@ -40,6 +40,28 @@ const getAuthorizedUser = async (req) => {
     }
 };
 
+const getAuthorizedExternalUser = async (req) => {
+    const token = getAccessToken(req);
+    if (!token || !process.env.ACCESS_TOKEN_SECRET) return null;
+
+    try {
+        const payload = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+        if (!payload?.id || payload.userType !== "external") return null;
+
+        const { data: user, error } = await supabase
+            .from("ExternalUsers")
+            .select('id, userName, companyId, role')
+            .eq("id", payload.id)
+            .maybeSingle();
+
+        if (error || !user) return null;
+
+        return { token, payload, user };
+    } catch {
+        return null;
+    }
+};
+
 const requireAuthenticatedUser = async (req, res, next) => {
     const user = await getAuthorizedUser(req);
 
@@ -48,6 +70,22 @@ const requireAuthenticatedUser = async (req, res, next) => {
     }
 
     req.user = user;
+    next();
+};
+
+const requireAuthenticatedExternalUser = async (req, res, next) => {
+    const user = await getAuthorizedExternalUser(req);
+
+    if (!user) {
+        const internalUser = await getAuthorizedUser(req);
+        if (internalUser) {
+            return res.status(403).json({ error: "External company user access required" });
+        }
+
+        return res.status(401).json({ error: "Missing, invalid, or expired external user token" });
+    }
+
+    req.externalUser = user;
     next();
 };
 
@@ -131,6 +169,128 @@ const normalizeAdminRole = (adminRole) => {
     return adminRole === true || adminRole === "true" || adminRole === "Admin";
 };
 
+const vehicleCategories = new Set(["Caddy", "3.5T", "7.5T Truck - 24T Truck"]);
+
+const isValidAvailabilityDate = (date) => {
+    return typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date);
+};
+
+const getTimeZoneOffsetMs = (date, timeZone) => {
+    const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hourCycle: "h23",
+    }).formatToParts(date);
+
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    const zonedTimestamp = Date.UTC(
+        Number(values.year),
+        Number(values.month) - 1,
+        Number(values.day),
+        Number(values.hour),
+        Number(values.minute),
+        Number(values.second)
+    );
+
+    return zonedTimestamp - date.getTime();
+};
+
+const zonedDateTimeToUtc = (date, time, timeZone = process.env.AVAILABILITY_TIME_ZONE || "Europe/Bucharest") => {
+    const [year, month, day] = date.split("-").map(Number);
+    const [hour, minute, secondAndMs] = time.split(":");
+    const [second, millisecond = "0"] = secondAndMs.split(".");
+    const utcGuess = new Date(Date.UTC(
+        year,
+        month - 1,
+        day,
+        Number(hour),
+        Number(minute),
+        Number(second),
+        Number(millisecond.padEnd(3, "0"))
+    ));
+    const offset = getTimeZoneOffsetMs(utcGuess, timeZone);
+
+    return new Date(utcGuess.getTime() - offset);
+};
+
+const getAvailabilityExpiresAt = (availableDate) => {
+    return zonedDateTimeToUtc(availableDate, "23:59:59.999").toISOString();
+};
+
+const normalizeAvailabilityEntry = (entry) => ({
+    country: String(entry?.country ?? "").trim().toUpperCase(),
+    postalCode: String(entry?.postalCode ?? "").trim(),
+    city: String(entry?.city ?? "").trim(),
+    vehicleCategory: String(entry?.vehicleCategory ?? "").trim(),
+});
+
+const validateAvailabilityEntry = (entry, index) => {
+    const missingFields = [];
+
+    if (!entry.country) missingFields.push("country");
+    if (!entry.postalCode) missingFields.push("postalCode");
+    if (!entry.city) missingFields.push("city");
+    if (!entry.vehicleCategory) missingFields.push("vehicleCategory");
+
+    if (missingFields.length) {
+        return {
+            index,
+            message: `Missing required fields: ${missingFields.join(", ")}`,
+        };
+    }
+
+    if (!vehicleCategories.has(entry.vehicleCategory)) {
+        return {
+            index,
+            message: "Invalid vehicle category",
+        };
+    }
+
+    return null;
+};
+
+const geocodeAvailabilityEntry = async (entry) => {
+    if (!process.env.GEOAPIFY_API_KEY) {
+        throw new Error("GEOAPIFY_API_KEY is not configured");
+    }
+
+    const params = new URLSearchParams({
+        postcode: entry.postalCode,
+        city: entry.city,
+        limit: "1",
+        format: "json",
+        apiKey: process.env.GEOAPIFY_API_KEY,
+    });
+
+    if (entry.country) {
+        params.set("filter", `countrycode:${entry.country.toLowerCase()}`);
+    }
+
+    const response = await fetch(`https://api.geoapify.com/v1/geocode/search?${params.toString()}`);
+
+    if (!response.ok) {
+        throw new Error(`Geoapify request failed with status ${response.status}`);
+    }
+
+    const result = await response.json();
+    const location = result?.results?.[0];
+
+    if (!location || typeof location.lat !== "number" || typeof location.lon !== "number") {
+        return null;
+    }
+
+    return {
+        latitude: location.lat,
+        longitude: location.lon,
+        formattedAddress: location.formatted ?? "",
+    };
+};
+
 const escapeHtml = (value) => {
     return String(value ?? "")
         .replace(/&/g, "&amp;")
@@ -181,7 +341,45 @@ dbRouter.post("/signIn", async (req, res) => {
     if (error) return res.status(500).json({ error: error.message });
 
     if (!user || !verifyPassword(password, user.password)) {
-        return res.status(401).json(false);
+        const { data: externalUser, error: externalUserError } = await supabase
+            .from("ExternalUsers")
+            .select("*")
+            .eq("userName", userName)
+            .maybeSingle();
+
+        if (externalUserError) return res.status(500).json({ error: externalUserError.message });
+
+        if (!externalUser || !verifyPassword(password, externalUser.password)) {
+            return res.status(401).json(false);
+        }
+
+        if (!isPasswordHash(externalUser.password)) {
+            await supabase
+                .from("ExternalUsers")
+                .update({ password: hashPassword(password) })
+                .eq("id", externalUser.id);
+        }
+
+        const externalToken = jwt.sign({
+            id: externalUser.id,
+            userName: externalUser.userName,
+            userType: "external",
+            companyId: externalUser.companyId,
+            role: externalUser.role,
+            adminRole: false,
+        }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: "8h" });
+
+        return res.json({
+            token: externalToken,
+            user: {
+                id: externalUser.id,
+                userName: externalUser.userName,
+                userType: "external",
+                companyId: externalUser.companyId,
+                role: externalUser.role,
+                adminRole: false,
+            },
+        });
     }
 
     if (!isPasswordHash(user.password)) {
@@ -194,6 +392,7 @@ dbRouter.post("/signIn", async (req, res) => {
     const token = jwt.sign({
         id: user.id,
         userName: user.userName,
+        userType: "internal",
         adminRole: user.adminRole,
     }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: "8h" });
 
@@ -202,6 +401,7 @@ dbRouter.post("/signIn", async (req, res) => {
         user: {
             id: user.id,
             userName: user.userName,
+            userType: "internal",
             adminRole: user.adminRole,
         },
     });
@@ -600,6 +800,89 @@ dbRouter.post("/queueCompanyEmailCampaign", async (req, res) => {
     } catch (queueError) {
         res.status(500).json({ error: queueError.message });
     }
+});
+
+dbRouter.post("/api/v1/availability", requireAuthenticatedExternalUser, async (req, res) => {
+    const { availabilityDate, entries = [] } = req.body;
+
+    if (!isValidAvailabilityDate(availabilityDate)) {
+        return res.status(400).json({ error: "A valid availabilityDate is required" });
+    }
+
+    if (!Array.isArray(entries) || entries.length === 0) {
+        return res.status(400).json({ error: "At least one availability entry is required" });
+    }
+
+    const normalizedEntries = entries
+        .map(normalizeAvailabilityEntry)
+        .filter((entry) => entry.country || entry.postalCode || entry.city || entry.vehicleCategory);
+
+    if (!normalizedEntries.length) {
+        return res.status(400).json({ error: "At least one completed availability entry is required" });
+    }
+
+    const validationErrors = normalizedEntries
+        .map((entry, index) => validateAvailabilityEntry(entry, index))
+        .filter(Boolean);
+
+    if (validationErrors.length) {
+        return res.status(400).json({ error: "Invalid availability entries", details: validationErrors });
+    }
+
+    const geocodedEntries = [];
+
+    try {
+        for (const [index, entry] of normalizedEntries.entries()) {
+            const coordinates = await geocodeAvailabilityEntry(entry);
+
+            if (!coordinates) {
+                return res.status(400).json({
+                    error: "Unable to geocode one or more availability entries",
+                    details: [{
+                        index,
+                        message: `No coordinates found for ${entry.postalCode}, ${entry.city}, ${entry.country}`,
+                    }],
+                });
+            }
+
+            geocodedEntries.push({ ...entry, ...coordinates });
+        }
+    } catch (error) {
+        console.error("Availability geocoding failed", error);
+        return res.status(502).json({ error: error.message || "Availability geocoding failed" });
+    }
+
+    const expiresAt = getAvailabilityExpiresAt(availabilityDate);
+    const rows = geocodedEntries.map((entry) => ({
+        companyId: req.externalUser.user.companyId,
+        createdByExternalUserId: req.externalUser.user.id,
+        country: entry.country,
+        city: entry.city,
+        postalCode: entry.postalCode,
+        latitude: entry.latitude,
+        longitude: entry.longitude,
+        vehicleCategory: entry.vehicleCategory,
+        quantity: 1,
+        notes: entry.formattedAddress,
+        availableDate: availabilityDate,
+        expiresAt,
+        status: "active",
+    }));
+
+    const { data, error } = await supabase
+        .from("VehicleAvailability")
+        .insert(rows)
+        .select("*");
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    res.status(201).json({
+        created: true,
+        count: data.length,
+        availability: data,
+    });
 });
 
 dbRouter.post("/addQuotation", requireAuthenticatedUser, requireInternalUser, async (req, res) => {
