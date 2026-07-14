@@ -119,6 +119,21 @@ const requireAuthenticatedInternalOrExternalUser = async (req, res, next) => {
     return res.status(401).json({ error: "Missing, invalid, or expired user token" });
 };
 
+const requireValidJwtToken = (req, res, next) => {
+    const token = getAccessToken(req);
+
+    if (!token || !process.env.ACCESS_TOKEN_SECRET) {
+        return res.status(401).json({ error: "Missing, invalid, or expired user token" });
+    }
+
+    try {
+        req.authPayload = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+        return next();
+    } catch {
+        return res.status(401).json({ error: "Missing, invalid, or expired user token" });
+    }
+};
+
 const requireInternalUser = (req, res, next) => {
     if (!req.user) {
         return res.status(403).json({ error: "Internal application access required" });
@@ -940,7 +955,7 @@ dbRouter.post("/api/v1/availability", requireAuthenticatedExternalUser, async (r
     });
 });
 
-dbRouter.get("/api/v1/internal/availability", requireAuthenticatedInternalOrExternalUser, async (req, res) => {
+dbRouter.get("/api/v1/internal/availability", requireValidJwtToken, async (req, res) => {
     const now = new Date().toISOString();
     const { data: availabilityRows, error: availabilityError } = await supabase
         .from("VehicleAvailability")
