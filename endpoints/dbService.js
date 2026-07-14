@@ -46,13 +46,21 @@ const getAuthorizedExternalUser = async (req) => {
 
     try {
         const payload = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
-        if (!payload?.id || payload.userType !== "external") return null;
+        const hasExternalUserType = payload.userType === "external";
+        const hasExternalRole = ["dispatcher", "company_admin"].includes(payload.role);
 
-        const { data: user, error } = await supabase
+        if (!payload?.id || (!hasExternalUserType && !hasExternalRole)) return null;
+
+        let query = supabase
             .from("ExternalUsers")
             .select('id, userName, companyId, role')
-            .eq("id", payload.id)
-            .maybeSingle();
+            .eq("id", payload.id);
+
+        if (payload.companyId) {
+            query = query.eq("companyId", payload.companyId);
+        }
+
+        const { data: user, error } = await query.maybeSingle();
 
         if (error || !user) return null;
 
@@ -304,6 +312,36 @@ const getPublicBaseUrl = (req) => {
     return process.env.PUBLIC_BACKEND_URL || `${req.protocol}://${req.get("host")}`;
 };
 
+const createExternalUserSignInResponse = async (externalUser, password) => {
+    if (!isPasswordHash(externalUser.password)) {
+        await supabase
+            .from("ExternalUsers")
+            .update({ password: hashPassword(password) })
+            .eq("id", externalUser.id);
+    }
+
+    const token = jwt.sign({
+        id: externalUser.id,
+        userName: externalUser.userName,
+        userType: "external",
+        companyId: externalUser.companyId,
+        role: externalUser.role,
+        adminRole: false,
+    }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: "8h" });
+
+    return {
+        token,
+        user: {
+            id: externalUser.id,
+            userName: externalUser.userName,
+            userType: "external",
+            companyId: externalUser.companyId,
+            role: externalUser.role,
+            adminRole: false,
+        },
+    };
+};
+
 const createUnsubscribeUrl = (req, company) => {
     if (!process.env.ACCESS_TOKEN_SECRET) {
         throw new Error("ACCESS_TOKEN_SECRET is not configured");
@@ -332,6 +370,19 @@ dbRouter.post("/signIn", async (req, res) => {
         return res.status(400).json({ error: "Username and password are required" });
     }
 
+    const { data: externalUser, error: externalUserError } = await supabase
+        .from("ExternalUsers")
+        .select("*")
+        .eq("userName", userName)
+        .maybeSingle();
+
+    if (externalUserError) return res.status(500).json({ error: externalUserError.message });
+
+    if (externalUser && verifyPassword(password, externalUser.password)) {
+        const response = await createExternalUserSignInResponse(externalUser, password);
+        return res.json(response);
+    }
+
     const { data: user, error } = await supabase
         .from("Users")
         .select("*")
@@ -341,45 +392,7 @@ dbRouter.post("/signIn", async (req, res) => {
     if (error) return res.status(500).json({ error: error.message });
 
     if (!user || !verifyPassword(password, user.password)) {
-        const { data: externalUser, error: externalUserError } = await supabase
-            .from("ExternalUsers")
-            .select("*")
-            .eq("userName", userName)
-            .maybeSingle();
-
-        if (externalUserError) return res.status(500).json({ error: externalUserError.message });
-
-        if (!externalUser || !verifyPassword(password, externalUser.password)) {
-            return res.status(401).json(false);
-        }
-
-        if (!isPasswordHash(externalUser.password)) {
-            await supabase
-                .from("ExternalUsers")
-                .update({ password: hashPassword(password) })
-                .eq("id", externalUser.id);
-        }
-
-        const externalToken = jwt.sign({
-            id: externalUser.id,
-            userName: externalUser.userName,
-            userType: "external",
-            companyId: externalUser.companyId,
-            role: externalUser.role,
-            adminRole: false,
-        }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: "8h" });
-
-        return res.json({
-            token: externalToken,
-            user: {
-                id: externalUser.id,
-                userName: externalUser.userName,
-                userType: "external",
-                companyId: externalUser.companyId,
-                role: externalUser.role,
-                adminRole: false,
-            },
-        });
+        return res.status(401).json(false);
     }
 
     if (!isPasswordHash(user.password)) {
