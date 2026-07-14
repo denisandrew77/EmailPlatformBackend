@@ -25,6 +25,7 @@ const getAuthorizedUser = async (req) => {
     try {
         const payload = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
         if (!payload?.id) return null;
+        if (payload.userType === "external") return null;
 
         const { data: user, error } = await supabase
             .from("Users")
@@ -261,6 +262,23 @@ const validateAvailabilityEntry = (entry, index) => {
 
     return null;
 };
+
+const toAvailabilityMapResponse = (availability, companiesById) => ({
+    id: availability.id,
+    companyId: availability.companyId,
+    companyName: companiesById.get(availability.companyId)?.name ?? "",
+    country: availability.country,
+    postalCode: availability.postalCode,
+    city: availability.city,
+    latitude: Number(availability.latitude),
+    longitude: Number(availability.longitude),
+    vehicleCategory: availability.vehicleCategory,
+    quantity: availability.quantity,
+    notes: availability.notes,
+    availableDate: availability.availableDate,
+    expiresAt: availability.expiresAt,
+    createdAt: availability.createdAt,
+});
 
 const geocodeAvailabilityEntry = async (entry) => {
     if (!process.env.GEOAPIFY_API_KEY) {
@@ -896,6 +914,41 @@ dbRouter.post("/api/v1/availability", requireAuthenticatedExternalUser, async (r
         count: data.length,
         availability: data,
     });
+});
+
+dbRouter.get("/api/v1/internal/availability", requireAuthenticatedUser, requireInternalUser, async (req, res) => {
+    const now = new Date().toISOString();
+    const { data: availabilityRows, error: availabilityError } = await supabase
+        .from("VehicleAvailability")
+        .select("*")
+        .eq("status", "active")
+        .gt("expiresAt", now)
+        .not("latitude", "is", null)
+        .not("longitude", "is", null)
+        .order("availableDate", { ascending: true })
+        .order("createdAt", { ascending: false });
+
+    if (availabilityError) {
+        return res.status(500).json({ error: availabilityError.message });
+    }
+
+    const companyIds = [...new Set((availabilityRows ?? []).map((row) => row.companyId).filter(Boolean))];
+    let companiesById = new Map();
+
+    if (companyIds.length) {
+        const { data: companies, error: companiesError } = await supabase
+            .from("Companies")
+            .select("id, name")
+            .in("id", companyIds);
+
+        if (companiesError) {
+            return res.status(500).json({ error: companiesError.message });
+        }
+
+        companiesById = new Map(companies.map((company) => [company.id, company]));
+    }
+
+    res.json((availabilityRows ?? []).map((availability) => toAvailabilityMapResponse(availability, companiesById)));
 });
 
 dbRouter.post("/addQuotation", requireAuthenticatedUser, requireInternalUser, async (req, res) => {
