@@ -362,6 +362,10 @@ const escapeHtml = (value) => {
         .replace(/'/g, "&#039;");
 };
 
+const normalizeEmail = (value) => {
+    return String(value ?? "").trim().toLowerCase();
+};
+
 const getPublicBaseUrl = (req) => {
     return process.env.PUBLIC_BACKEND_URL || `${req.protocol}://${req.get("host")}`;
 };
@@ -427,6 +431,40 @@ dbRouter.post("/signIn", async (req, res) => {
         return res.status(400).json({ error: "Username/email and password are required" });
     }
 
+    const { data: user, error } = await supabase
+        .from("Users")
+        .select("*")
+        .eq("userName", loginIdentifier)
+        .maybeSingle();
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    if (user && verifyPassword(password, user.password)) {
+        if (!isPasswordHash(user.password)) {
+            await supabase
+                .from("Users")
+                .update({ password: hashPassword(password) })
+                .eq("id", user.id);
+        }
+
+        const token = jwt.sign({
+            id: user.id,
+            userName: user.userName,
+            userType: "internal",
+            adminRole: user.adminRole,
+        }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: "8h" });
+
+        return res.json({
+            token,
+            user: {
+                id: user.id,
+                userName: user.userName,
+                userType: "internal",
+                adminRole: user.adminRole,
+            },
+        });
+    }
+
     const { data: externalUser, error: externalUserError } = await supabase
         .from("ExternalUsers")
         .select("*")
@@ -440,41 +478,69 @@ dbRouter.post("/signIn", async (req, res) => {
         return res.json(response);
     }
 
-    const { data: user, error } = await supabase
-        .from("Users")
-        .select("*")
-        .eq("userName", loginIdentifier)
+    return res.status(401).json(false);
+});
+
+dbRouter.post("/api/v1/external/register", async (req, res) => {
+    const emailAddress = normalizeEmail(req.body.emailAddress);
+    const password = String(req.body.password ?? "");
+    const fiscalCode = String(req.body.fiscalCode ?? "").trim();
+
+    if (!process.env.ACCESS_TOKEN_SECRET) {
+        return res.status(500).json({ error: "ACCESS_TOKEN_SECRET is not configured" });
+    }
+
+    if (!emailAddress || !emailAddress.includes("@") || password.length < 8 || !fiscalCode) {
+        return res.status(400).json({
+            error: "Email address, password with at least 8 characters, and fiscal code are required",
+        });
+    }
+
+    const { data: company, error: companyError } = await supabase
+        .from("Companies")
+        .select("id, fiscalCode")
+        .ilike("fiscalCode", fiscalCode)
         .maybeSingle();
 
-    if (error) return res.status(500).json({ error: error.message });
-
-    if (!user || !verifyPassword(password, user.password)) {
-        return res.status(401).json(false);
+    if (companyError) {
+        return res.status(500).json({ error: companyError.message });
     }
 
-    if (!isPasswordHash(user.password)) {
-        await supabase
-            .from("Users")
-            .update({ password: hashPassword(password) })
-            .eq("id", user.id);
+    if (!company) {
+        return res.status(404).json({ error: "No company was found for this fiscal code" });
     }
 
-    const token = jwt.sign({
-        id: user.id,
-        userName: user.userName,
-        userType: "internal",
-        adminRole: user.adminRole,
-    }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: "8h" });
+    const { data: existingExternalUser, error: existingExternalUserError } = await supabase
+        .from("ExternalUsers")
+        .select("id")
+        .ilike("emailAddress", emailAddress)
+        .maybeSingle();
 
-    res.json({
-        token,
-        user: {
-            id: user.id,
-            userName: user.userName,
-            userType: "internal",
-            adminRole: user.adminRole,
-        },
-    });
+    if (existingExternalUserError) {
+        return res.status(500).json({ error: existingExternalUserError.message });
+    }
+
+    if (existingExternalUser) {
+        return res.status(409).json({ error: "An account already exists for this email address" });
+    }
+
+    const { data: externalUser, error: externalUserError } = await supabase
+        .from("ExternalUsers")
+        .insert({
+            emailAddress,
+            password: hashPassword(password),
+            companyId: company.id,
+            type: "dispatcher",
+        })
+        .select("*")
+        .single();
+
+    if (externalUserError) {
+        return res.status(500).json({ error: externalUserError.message });
+    }
+
+    const response = await createExternalUserSignInResponse(externalUser, password);
+    return res.status(201).json(response);
 });
 
 dbRouter.get("/api/v1/auth/me", requireAuthenticatedUser, async (req, res) => {
