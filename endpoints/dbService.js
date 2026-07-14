@@ -47,7 +47,9 @@ const getAuthorizedExternalUser = async (req) => {
 
     try {
         const payload = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
-        if (!payload?.id || payload.userType !== "external") return null;
+        const hasExternalPayloadShape = payload?.userType === "external" || payload?.companyId || payload?.emailAddress;
+
+        if (!payload?.id || !hasExternalPayloadShape) return null;
 
         let query = supabase
             .from("ExternalUsers")
@@ -56,6 +58,10 @@ const getAuthorizedExternalUser = async (req) => {
 
         if (payload.companyId) {
             query = query.eq("companyId", payload.companyId);
+        }
+
+        if (payload.emailAddress) {
+            query = query.ilike("emailAddress", payload.emailAddress);
         }
 
         const { data: user, error } = await query.maybeSingle();
