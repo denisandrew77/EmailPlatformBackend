@@ -47,14 +47,11 @@ const getAuthorizedExternalUser = async (req) => {
 
     try {
         const payload = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
-        const hasExternalUserType = payload.userType === "external";
-        const hasExternalRole = ["dispatcher", "company_admin"].includes(payload.role);
-
-        if (!payload?.id || (!hasExternalUserType && !hasExternalRole)) return null;
+        if (!payload?.id || payload.userType !== "external") return null;
 
         let query = supabase
             .from("ExternalUsers")
-            .select('id, userName, companyId, role')
+            .select('id, emailAddress, companyId, type')
             .eq("id", payload.id);
 
         if (payload.companyId) {
@@ -358,10 +355,11 @@ const createExternalUserSignInResponse = async (externalUser, password) => {
 
     const token = jwt.sign({
         id: externalUser.id,
-        userName: externalUser.userName,
+        userName: externalUser.emailAddress,
+        emailAddress: externalUser.emailAddress,
         userType: "external",
         companyId: externalUser.companyId,
-        role: externalUser.role,
+        type: externalUser.type,
         adminRole: false,
     }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: "8h" });
 
@@ -369,10 +367,11 @@ const createExternalUserSignInResponse = async (externalUser, password) => {
         token,
         user: {
             id: externalUser.id,
-            userName: externalUser.userName,
+            userName: externalUser.emailAddress,
+            emailAddress: externalUser.emailAddress,
             userType: "external",
             companyId: externalUser.companyId,
-            role: externalUser.role,
+            type: externalUser.type,
             adminRole: false,
         },
     };
@@ -397,19 +396,20 @@ const createUnsubscribeUrl = (req, company) => {
 
 dbRouter.post("/signIn", async (req, res) => {
     const { userName, password } = req.body;
+    const loginIdentifier = String(userName ?? "").trim();
 
     if (!process.env.ACCESS_TOKEN_SECRET) {
         return res.status(500).json({ error: "ACCESS_TOKEN_SECRET is not configured" });
     }
 
-    if (typeof userName !== "string" || typeof password !== "string") {
-        return res.status(400).json({ error: "Username and password are required" });
+    if (!loginIdentifier || typeof password !== "string") {
+        return res.status(400).json({ error: "Username/email and password are required" });
     }
 
     const { data: externalUser, error: externalUserError } = await supabase
         .from("ExternalUsers")
         .select("*")
-        .eq("userName", userName)
+        .ilike("emailAddress", loginIdentifier)
         .maybeSingle();
 
     if (externalUserError) return res.status(500).json({ error: externalUserError.message });
@@ -422,7 +422,7 @@ dbRouter.post("/signIn", async (req, res) => {
     const { data: user, error } = await supabase
         .from("Users")
         .select("*")
-        .eq("userName", userName)
+        .eq("userName", loginIdentifier)
         .maybeSingle();
 
     if (error) return res.status(500).json({ error: error.message });
