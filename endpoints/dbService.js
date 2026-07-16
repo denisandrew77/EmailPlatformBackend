@@ -512,16 +512,6 @@ dbRouter.post("/api/v1/external/register", async (req, res) => {
         });
     }
 
-    const { company, error: companyError } = await getCompanyByName(companyName);
-
-    if (companyError) {
-        return res.status(500).json({ error: companyError.message });
-    }
-
-    if (!company) {
-        return res.status(404).json({ error: "No company was found for this company name" });
-    }
-
     const { data: existingExternalUser, error: existingExternalUserError } = await supabase
         .from("ExternalUsers")
         .select("id")
@@ -541,7 +531,7 @@ dbRouter.post("/api/v1/external/register", async (req, res) => {
         .insert({
             emailAddress,
             password: hashPassword(password),
-            companyName: company.name,
+            companyName,
             type: "dispatcher",
         })
         .select("*")
