@@ -500,30 +500,26 @@ dbRouter.post("/signIn", async (req, res) => {
 dbRouter.post("/api/v1/external/register", async (req, res) => {
     const emailAddress = normalizeEmail(req.body.emailAddress);
     const password = String(req.body.password ?? "");
-    const fiscalCode = String(req.body.fiscalCode ?? "").trim();
+    const companyName = String(req.body.companyName ?? "").trim();
 
     if (!process.env.ACCESS_TOKEN_SECRET) {
         return res.status(500).json({ error: "ACCESS_TOKEN_SECRET is not configured" });
     }
 
-    if (!emailAddress || !emailAddress.includes("@") || password.length < 8 || !fiscalCode) {
+    if (!emailAddress || !emailAddress.includes("@") || password.length < 8 || !companyName) {
         return res.status(400).json({
-            error: "Email address, password with at least 8 characters, and fiscal code are required",
+            error: "Email address, password with at least 8 characters, and company name are required",
         });
     }
 
-    const { data: company, error: companyError } = await supabase
-        .from("Companies")
-        .select("id, name, fiscalCode")
-        .ilike("fiscalCode", fiscalCode)
-        .maybeSingle();
+    const { company, error: companyError } = await getCompanyByName(companyName);
 
     if (companyError) {
         return res.status(500).json({ error: companyError.message });
     }
 
     if (!company) {
-        return res.status(404).json({ error: "No company was found for this fiscal code" });
+        return res.status(404).json({ error: "No company was found for this company name" });
     }
 
     const { data: existingExternalUser, error: existingExternalUserError } = await supabase
