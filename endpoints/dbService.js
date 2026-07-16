@@ -47,21 +47,21 @@ const getAuthorizedExternalUser = async (req) => {
 
     try {
         const payload = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
-        const hasExternalPayloadShape = payload?.userType === "external" || payload?.companyId || payload?.emailAddress;
+        const hasExternalPayloadShape = payload?.userType === "external" || payload?.companyName || payload?.emailAddress;
 
         if (!payload?.id || !hasExternalPayloadShape) return null;
 
         let query = supabase
             .from("ExternalUsers")
-            .select('id, emailAddress, companyId, type')
+            .select('id, emailAddress, companyName, type')
             .eq("id", payload.id);
-
-        if (payload.companyId) {
-            query = query.eq("companyId", payload.companyId);
-        }
 
         if (payload.emailAddress) {
             query = query.ilike("emailAddress", payload.emailAddress);
+        }
+
+        if (payload.companyName) {
+            query = query.ilike("companyName", payload.companyName);
         }
 
         const { data: user, error } = await query.maybeSingle();
@@ -366,6 +366,22 @@ const normalizeEmail = (value) => {
     return String(value ?? "").trim().toLowerCase();
 };
 
+const getCompanyByName = async (companyName) => {
+    const normalizedCompanyName = String(companyName ?? "").trim();
+
+    if (!normalizedCompanyName) {
+        return { company: null, error: null };
+    }
+
+    const { data: company, error } = await supabase
+        .from("Companies")
+        .select("id, name")
+        .ilike("name", normalizedCompanyName)
+        .maybeSingle();
+
+    return { company, error };
+};
+
 const getPublicBaseUrl = (req) => {
     return process.env.PUBLIC_BACKEND_URL || `${req.protocol}://${req.get("host")}`;
 };
@@ -383,7 +399,7 @@ const createExternalUserSignInResponse = async (externalUser, password) => {
         userName: externalUser.emailAddress,
         emailAddress: externalUser.emailAddress,
         userType: "external",
-        companyId: externalUser.companyId,
+        companyName: externalUser.companyName,
         type: externalUser.type,
         adminRole: false,
     }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: "8h" });
@@ -395,7 +411,7 @@ const createExternalUserSignInResponse = async (externalUser, password) => {
             userName: externalUser.emailAddress,
             emailAddress: externalUser.emailAddress,
             userType: "external",
-            companyId: externalUser.companyId,
+            companyName: externalUser.companyName,
             type: externalUser.type,
             adminRole: false,
         },
@@ -498,7 +514,7 @@ dbRouter.post("/api/v1/external/register", async (req, res) => {
 
     const { data: company, error: companyError } = await supabase
         .from("Companies")
-        .select("id, fiscalCode")
+        .select("id, name, fiscalCode")
         .ilike("fiscalCode", fiscalCode)
         .maybeSingle();
 
@@ -529,7 +545,7 @@ dbRouter.post("/api/v1/external/register", async (req, res) => {
         .insert({
             emailAddress,
             password: hashPassword(password),
-            companyId: company.id,
+            companyName: company.name,
             type: "dispatcher",
         })
         .select("*")
@@ -988,9 +1004,21 @@ dbRouter.post("/api/v1/availability", requireAuthenticatedExternalUser, async (r
         return res.status(502).json({ error: error.message || "Availability geocoding failed" });
     }
 
+    const { company, error: companyError } = await getCompanyByName(req.externalUser.user.companyName);
+
+    if (companyError) {
+        return res.status(500).json({ error: companyError.message });
+    }
+
+    if (!company) {
+        return res.status(400).json({
+            error: "The company assigned to this external user could not be found",
+        });
+    }
+
     const expiresAt = getAvailabilityExpiresAt(availabilityDate);
     const rows = geocodedEntries.map((entry) => ({
-        companyId: req.externalUser.user.companyId,
+        companyId: company.id,
         createdByExternalUserId: req.externalUser.user.id,
         country: entry.country,
         city: entry.city,
