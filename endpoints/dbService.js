@@ -1007,7 +1007,7 @@ dbRouter.post("/api/v1/availability", requireAuthenticatedExternalUser, async (r
     });
 });
 
-dbRouter.get("/api/v1/internal/availability", requireValidJwtToken, async (req, res) => {
+dbRouter.get("/api/v1/internal/availability", requireAuthenticatedUser, requireInternalUser, async (req, res) => {
     const now = new Date().toISOString();
     const { data: availabilityRows, error: availabilityError } = await supabase
         .from("VehicleAvailability")
