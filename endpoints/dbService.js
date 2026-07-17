@@ -53,7 +53,7 @@ const getAuthorizedExternalUser = async (req) => {
 
         let query = supabase
             .from("ExternalUsers")
-            .select('id, emailAddress, companyName, type')
+            .select('id, emailAddress, companyName')
             .eq("id", payload.id);
 
         if (payload.emailAddress) {
@@ -299,10 +299,9 @@ const validateAvailabilityEntry = (entry, index) => {
     return null;
 };
 
-const toAvailabilityMapResponse = (availability, companiesById) => ({
+const toAvailabilityMapResponse = (availability) => ({
     id: availability.id,
-    companyId: availability.companyId,
-    companyName: companiesById.get(availability.companyId)?.name ?? "",
+    companyName: availability.companyName || "",
     country: availability.country,
     postalCode: availability.postalCode,
     city: availability.city,
@@ -366,22 +365,6 @@ const normalizeEmail = (value) => {
     return String(value ?? "").trim().toLowerCase();
 };
 
-const getCompanyByName = async (companyName) => {
-    const normalizedCompanyName = String(companyName ?? "").trim();
-
-    if (!normalizedCompanyName) {
-        return { company: null, error: null };
-    }
-
-    const { data: company, error } = await supabase
-        .from("Companies")
-        .select("id, name")
-        .ilike("name", normalizedCompanyName)
-        .maybeSingle();
-
-    return { company, error };
-};
-
 const getPublicBaseUrl = (req) => {
     return process.env.PUBLIC_BACKEND_URL || `${req.protocol}://${req.get("host")}`;
 };
@@ -400,7 +383,6 @@ const createExternalUserSignInResponse = async (externalUser, password) => {
         emailAddress: externalUser.emailAddress,
         userType: "external",
         companyName: externalUser.companyName,
-        type: externalUser.type,
         adminRole: false,
     }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: "8h" });
 
@@ -412,7 +394,6 @@ const createExternalUserSignInResponse = async (externalUser, password) => {
             emailAddress: externalUser.emailAddress,
             userType: "external",
             companyName: externalUser.companyName,
-            type: externalUser.type,
             adminRole: false,
         },
     };
@@ -532,12 +513,15 @@ dbRouter.post("/api/v1/external/register", async (req, res) => {
             emailAddress,
             password: hashPassword(password),
             companyName,
-            type: "dispatcher",
         })
         .select("*")
         .single();
 
     if (externalUserError) {
+        if (externalUserError.code === "23505") {
+            return res.status(409).json({ error: "An account already exists for this email address" });
+        }
+
         return res.status(500).json({ error: externalUserError.message });
     }
 
@@ -990,21 +974,9 @@ dbRouter.post("/api/v1/availability", requireAuthenticatedExternalUser, async (r
         return res.status(502).json({ error: error.message || "Availability geocoding failed" });
     }
 
-    const { company, error: companyError } = await getCompanyByName(req.externalUser.user.companyName);
-
-    if (companyError) {
-        return res.status(500).json({ error: companyError.message });
-    }
-
-    if (!company) {
-        return res.status(400).json({
-            error: "The company assigned to this external user could not be found",
-        });
-    }
-
     const expiresAt = getAvailabilityExpiresAt(availabilityDate);
     const rows = geocodedEntries.map((entry) => ({
-        companyId: company.id,
+        companyName: req.externalUser.user.companyName,
         createdByExternalUserId: req.externalUser.user.id,
         country: entry.country,
         city: entry.city,
@@ -1051,23 +1023,7 @@ dbRouter.get("/api/v1/internal/availability", requireValidJwtToken, async (req, 
         return res.status(500).json({ error: availabilityError.message });
     }
 
-    const companyIds = [...new Set((availabilityRows ?? []).map((row) => row.companyId).filter(Boolean))];
-    let companiesById = new Map();
-
-    if (companyIds.length) {
-        const { data: companies, error: companiesError } = await supabase
-            .from("Companies")
-            .select("id, name")
-            .in("id", companyIds);
-
-        if (companiesError) {
-            return res.status(500).json({ error: companiesError.message });
-        }
-
-        companiesById = new Map(companies.map((company) => [company.id, company]));
-    }
-
-    res.json((availabilityRows ?? []).map((availability) => toAvailabilityMapResponse(availability, companiesById)));
+    res.json((availabilityRows ?? []).map(toAvailabilityMapResponse));
 });
 
 dbRouter.post("/addQuotation", requireAuthenticatedUser, requireInternalUser, async (req, res) => {
