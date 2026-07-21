@@ -342,12 +342,15 @@ const geocodeAvailabilityEntry = async (entry) => {
     }
 
     const params = new URLSearchParams({
-        postcode: entry.postalCode,
         city: entry.city,
         limit: "1",
         format: "json",
         apiKey: process.env.GEOAPIFY_API_KEY,
     });
+
+    if (entry.postalCode) {
+        params.set("postcode", entry.postalCode);
+    }
 
     if (entry.country) {
         params.set("filter", `countrycode:${entry.country.toLowerCase()}`);
@@ -371,6 +374,23 @@ const geocodeAvailabilityEntry = async (entry) => {
         longitude: location.lon,
         formattedAddress: location.formatted ?? "",
     };
+};
+
+const geocodeAvailabilityEntryWithFallback = async (entry) => {
+    const directCoordinates = await geocodeAvailabilityEntry(entry);
+
+    if (directCoordinates) {
+        return directCoordinates;
+    }
+
+    if (!entry.postalCode) {
+        return null;
+    }
+
+    return geocodeAvailabilityEntry({
+        ...entry,
+        postalCode: "",
+    });
 };
 
 const escapeHtml = (value) => {
@@ -980,19 +1000,19 @@ dbRouter.post("/api/v1/availability", requireAuthenticatedExternalUser, async (r
     }
 
     const geocodedEntries = [];
+    const skippedEntries = [];
 
     try {
         for (const [index, entry] of normalizedEntries.entries()) {
-            const coordinates = await geocodeAvailabilityEntry(entry);
+            const coordinates = await geocodeAvailabilityEntryWithFallback(entry);
 
             if (!coordinates) {
-                return res.status(400).json({
-                    error: "Unable to geocode one or more availability entries",
-                    details: [{
-                        index,
-                        message: `No coordinates found for ${entry.postalCode}, ${entry.city}, ${entry.country}`,
-                    }],
+                skippedEntries.push({
+                    index,
+                    entry,
+                    message: `No coordinates found for ${entry.postalCode}, ${entry.city}, ${entry.country}`,
                 });
+                continue;
             }
 
             geocodedEntries.push({ ...entry, ...coordinates });
@@ -1000,6 +1020,13 @@ dbRouter.post("/api/v1/availability", requireAuthenticatedExternalUser, async (r
     } catch (error) {
         console.error("Availability geocoding failed", error);
         return res.status(502).json({ error: error.message || "Availability geocoding failed" });
+    }
+
+    if (!geocodedEntries.length) {
+        return res.status(400).json({
+            error: "Unable to geocode any availability entries",
+            skipped: skippedEntries,
+        });
     }
 
     const rows = geocodedEntries.map((entry) => ({
@@ -1031,6 +1058,8 @@ dbRouter.post("/api/v1/availability", requireAuthenticatedExternalUser, async (r
     res.status(201).json({
         created: true,
         count: data.length,
+        skippedCount: skippedEntries.length,
+        skipped: skippedEntries,
         availability: data,
     });
 });
