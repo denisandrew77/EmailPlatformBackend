@@ -1024,13 +1024,25 @@ dbRouter.post("/api/v1/availability", requireAuthenticatedExternalUser, async (r
 
 dbRouter.get("/api/v1/internal/availability", requireAuthenticatedUser, requireInternalUser, async (req, res) => {
     const now = new Date().toISOString();
-    const { data: availabilityRows, error: availabilityError } = await supabase
+    const { availableDate } = req.query;
+
+    if (availableDate && !isValidAvailabilityDate(availableDate)) {
+        return res.status(400).json({ error: "availableDate must use YYYY-MM-DD format" });
+    }
+
+    let availabilityQuery = supabase
         .from("VehicleAvailability")
         .select("*")
         .eq("status", "active")
         .gt("expiresAt", now)
         .not("latitude", "is", null)
-        .not("longitude", "is", null)
+        .not("longitude", "is", null);
+
+    if (availableDate) {
+        availabilityQuery = availabilityQuery.eq("availableDate", availableDate);
+    }
+
+    const { data: availabilityRows, error: availabilityError } = await availabilityQuery
         .order("availableDate", { ascending: true })
         .order("createdAt", { ascending: false });
 
