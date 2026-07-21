@@ -285,6 +285,7 @@ const normalizeAvailabilityEntry = (entry) => ({
     postalCode: String(entry?.postalCode ?? "").trim(),
     city: String(entry?.city ?? "").trim(),
     vehicleCategory: String(entry?.vehicleCategory ?? "").trim(),
+    availabilityDate: String(entry?.availabilityDate ?? "").trim(),
 });
 
 const validateAvailabilityEntry = (entry, index) => {
@@ -294,6 +295,12 @@ const validateAvailabilityEntry = (entry, index) => {
     if (!entry.postalCode) missingFields.push("postalCode");
     if (!entry.city) missingFields.push("city");
     if (!entry.vehicleCategory) missingFields.push("vehicleCategory");
+    if (entry.availabilityDate && !isValidAvailabilityDate(entry.availabilityDate)) {
+        return {
+            index,
+            message: "Invalid availabilityDate",
+        };
+    }
 
     if (missingFields.length) {
         return {
@@ -950,7 +957,14 @@ dbRouter.post("/api/v1/availability", requireAuthenticatedExternalUser, async (r
     }
 
     const normalizedEntries = entries
-        .map(normalizeAvailabilityEntry)
+        .map((entry) => {
+            const normalizedEntry = normalizeAvailabilityEntry(entry);
+
+            return {
+                ...normalizedEntry,
+                availabilityDate: normalizedEntry.availabilityDate || availabilityDate,
+            };
+        })
         .filter((entry) => entry.country || entry.postalCode || entry.city || entry.vehicleCategory);
 
     if (!normalizedEntries.length) {
@@ -988,7 +1002,6 @@ dbRouter.post("/api/v1/availability", requireAuthenticatedExternalUser, async (r
         return res.status(502).json({ error: error.message || "Availability geocoding failed" });
     }
 
-    const expiresAt = getAvailabilityExpiresAt(availabilityDate);
     const rows = geocodedEntries.map((entry) => ({
         companyName: req.externalUser.user.companyName,
         emailAddress: req.externalUser.user.emailAddress,
@@ -1001,8 +1014,8 @@ dbRouter.post("/api/v1/availability", requireAuthenticatedExternalUser, async (r
         vehicleCategory: entry.vehicleCategory,
         quantity: 1,
         notes: entry.formattedAddress,
-        availableDate: availabilityDate,
-        expiresAt,
+        availableDate: entry.availabilityDate,
+        expiresAt: getAvailabilityExpiresAt(entry.availabilityDate),
         status: "active",
     }));
 
