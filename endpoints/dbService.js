@@ -263,8 +263,21 @@ const zonedDateTimeToUtc = (date, time, timeZone = process.env.AVAILABILITY_TIME
     return new Date(utcGuess.getTime() - offset);
 };
 
+const addDaysToDateString = (date, days) => {
+    const [year, month, day] = date.split("-").map(Number);
+    const utcDate = new Date(Date.UTC(year, month - 1, day + days));
+
+    return [
+        utcDate.getUTCFullYear(),
+        String(utcDate.getUTCMonth() + 1).padStart(2, "0"),
+        String(utcDate.getUTCDate()).padStart(2, "0"),
+    ].join("-");
+};
+
 const getAvailabilityExpiresAt = (availableDate) => {
-    return zonedDateTimeToUtc(availableDate, "23:59:59.999").toISOString();
+    const nextDay = addDaysToDateString(availableDate, 1);
+
+    return zonedDateTimeToUtc(nextDay, "00:00:00.000").toISOString();
 };
 
 const normalizeAvailabilityEntry = (entry) => ({
@@ -299,9 +312,10 @@ const validateAvailabilityEntry = (entry, index) => {
     return null;
 };
 
-const toAvailabilityMapResponse = (availability) => ({
+const toAvailabilityMapResponse = (availability, externalUsersById = new Map()) => ({
     id: availability.id,
     companyName: availability.companyName || "",
+    emailAddress: availability.emailAddress || externalUsersById.get(availability.createdByExternalUserId)?.emailAddress || "",
     country: availability.country,
     postalCode: availability.postalCode,
     city: availability.city,
@@ -977,6 +991,7 @@ dbRouter.post("/api/v1/availability", requireAuthenticatedExternalUser, async (r
     const expiresAt = getAvailabilityExpiresAt(availabilityDate);
     const rows = geocodedEntries.map((entry) => ({
         companyName: req.externalUser.user.companyName,
+        emailAddress: req.externalUser.user.emailAddress,
         createdByExternalUserId: req.externalUser.user.id,
         country: entry.country,
         city: entry.city,
@@ -1023,7 +1038,27 @@ dbRouter.get("/api/v1/internal/availability", requireAuthenticatedUser, requireI
         return res.status(500).json({ error: availabilityError.message });
     }
 
-    res.json((availabilityRows ?? []).map(toAvailabilityMapResponse));
+    const externalUserIds = [...new Set(
+        (availabilityRows ?? [])
+            .map((row) => row.createdByExternalUserId)
+            .filter(Boolean)
+    )];
+    let externalUsersById = new Map();
+
+    if (externalUserIds.length) {
+        const { data: externalUsers, error: externalUsersError } = await supabase
+            .from("ExternalUsers")
+            .select("id, emailAddress")
+            .in("id", externalUserIds);
+
+        if (externalUsersError) {
+            return res.status(500).json({ error: externalUsersError.message });
+        }
+
+        externalUsersById = new Map(externalUsers.map((externalUser) => [externalUser.id, externalUser]));
+    }
+
+    res.json((availabilityRows ?? []).map((availability) => toAvailabilityMapResponse(availability, externalUsersById)));
 });
 
 dbRouter.post("/addQuotation", requireAuthenticatedUser, requireInternalUser, async (req, res) => {

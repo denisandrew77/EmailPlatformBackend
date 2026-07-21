@@ -8,6 +8,9 @@ begin;
 alter table public."VehicleAvailability"
     add column if not exists "companyName" text;
 
+alter table public."VehicleAvailability"
+    add column if not exists "emailAddress" text;
+
 -- Preserve names for existing rows that were created while availability still
 -- pointed to Companies through companyId.
 do $$
@@ -26,6 +29,13 @@ begin
           and (va."companyName" is null or va."companyName" = '');
     end if;
 end $$;
+
+-- Preserve carrier emails for existing rows by using the ExternalUsers bind.
+update public."VehicleAvailability" va
+set "emailAddress" = eu."emailAddress"
+from public."ExternalUsers" eu
+where va."createdByExternalUserId" = eu.id
+  and (va."emailAddress" is null or va."emailAddress" = '');
 
 -- New external accounts no longer need to match Companies, so new
 -- availability rows no longer need companyId.
@@ -59,6 +69,9 @@ alter table public."VehicleAvailability"
 
 create index if not exists vehicle_availability_company_name_idx
     on public."VehicleAvailability" ("companyName");
+
+create index if not exists vehicle_availability_email_address_idx
+    on public."VehicleAvailability" ("emailAddress");
 
 -- Case-insensitive duplicate email protection for new external accounts.
 create unique index if not exists external_users_email_address_lower_unique_idx
