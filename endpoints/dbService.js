@@ -332,6 +332,7 @@ const toAvailabilityMapResponse = (availability, externalUsersById = new Map()) 
     id: availability.id,
     companyName: availability.companyName || "",
     emailAddress: availability.emailAddress || externalUsersById.get(availability.createdByExternalUserId)?.emailAddress || "",
+    phoneNumber: availability.phoneNumber || externalUsersById.get(availability.createdByExternalUserId)?.phoneNumber || "",
     country: availability.country,
     postalCode: availability.postalCode,
     city: availability.city,
@@ -1179,7 +1180,7 @@ dbRouter.get("/api/v1/internal/availability", requireAuthenticatedUser, requireI
     if (externalUserIds.length) {
         const { data: externalUsers, error: externalUsersError } = await supabase
             .from("ExternalUsers")
-            .select("id, emailAddress")
+            .select("id, emailAddress, phoneNumber")
             .in("id", externalUserIds);
 
         if (externalUsersError) {
