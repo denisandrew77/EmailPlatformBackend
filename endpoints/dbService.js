@@ -53,7 +53,7 @@ const getAuthorizedExternalUser = async (req) => {
 
         let query = supabase
             .from("ExternalUsers")
-            .select('id, emailAddress, companyName')
+            .select('id, emailAddress, companyName, phoneNumber')
             .eq("id", payload.id);
 
         if (payload.emailAddress) {
@@ -433,6 +433,7 @@ const createExternalUserSignInResponse = async (externalUser, password) => {
         emailAddress: externalUser.emailAddress,
         userType: "external",
         companyName: externalUser.companyName,
+        phoneNumber: externalUser.phoneNumber || "",
         adminRole: false,
     }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: "8h" });
 
@@ -444,6 +445,7 @@ const createExternalUserSignInResponse = async (externalUser, password) => {
             emailAddress: externalUser.emailAddress,
             userType: "external",
             companyName: externalUser.companyName,
+            phoneNumber: externalUser.phoneNumber || "",
             adminRole: false,
         },
     };
@@ -532,14 +534,15 @@ dbRouter.post("/api/v1/external/register", async (req, res) => {
     const emailAddress = normalizeEmail(req.body.emailAddress);
     const password = String(req.body.password ?? "");
     const companyName = String(req.body.companyName ?? "").trim();
+    const phoneNumber = String(req.body.phoneNumber ?? "").trim();
 
     if (!process.env.ACCESS_TOKEN_SECRET) {
         return res.status(500).json({ error: "ACCESS_TOKEN_SECRET is not configured" });
     }
 
-    if (!emailAddress || !emailAddress.includes("@") || password.length < 8 || !companyName) {
+    if (!emailAddress || !emailAddress.includes("@") || password.length < 8 || !companyName || !phoneNumber) {
         return res.status(400).json({
-            error: "Email address, password with at least 8 characters, and company name are required",
+            error: "Email address, password with at least 8 characters, company name, and phone number are required",
         });
     }
 
@@ -563,6 +566,7 @@ dbRouter.post("/api/v1/external/register", async (req, res) => {
             emailAddress,
             password: hashPassword(password),
             companyName,
+            phoneNumber,
         })
         .select("*")
         .single();
