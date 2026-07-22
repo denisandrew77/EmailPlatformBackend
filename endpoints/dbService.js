@@ -292,7 +292,6 @@ const validateAvailabilityEntry = (entry, index) => {
     const missingFields = [];
 
     if (!entry.country) missingFields.push("country");
-    if (!entry.postalCode) missingFields.push("postalCode");
     if (!entry.city) missingFields.push("city");
     if (!entry.vehicleCategory) missingFields.push("vehicleCategory");
     if (entry.availabilityDate && !isValidAvailabilityDate(entry.availabilityDate)) {
@@ -383,7 +382,7 @@ const geocodeAvailabilityEntryWithFallback = async (entry) => {
         return directCoordinates;
     }
 
-    if (!entry.postalCode) {
+    if (!entry.postalCode || !entry.city) {
         return null;
     }
 
