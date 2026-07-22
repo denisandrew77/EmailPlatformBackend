@@ -592,6 +592,35 @@ dbRouter.get("/getAllUsers", async (req, res) => {
     res.json(data);
 });
 
+dbRouter.get("/api/v1/internal/availability-companies", requireAuthenticatedUser, requireInternalUser, async (req, res) => {
+    const { data, error } = await supabase
+        .from("ExternalUsers")
+        .select("companyName, emailAddress")
+        .not("companyName", "is", null)
+        .order("companyName", { ascending: true });
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    const companiesByName = new Map();
+
+    (data ?? []).forEach((externalUser) => {
+        const companyName = String(externalUser.companyName ?? "").trim();
+
+        if (!companyName || companiesByName.has(companyName.toLowerCase())) {
+            return;
+        }
+
+        companiesByName.set(companyName.toLowerCase(), {
+            companyName,
+            emailAddress: externalUser.emailAddress || "",
+        });
+    });
+
+    res.json([...companiesByName.values()]);
+});
+
 const handleCreateUser = async (req, res) => {
     if (!(await requireAdmin(req, res))) return;
 
@@ -964,11 +993,46 @@ dbRouter.post("/queueCompanyEmailCampaign", async (req, res) => {
     }
 });
 
-dbRouter.post("/api/v1/availability", requireAuthenticatedExternalUser, async (req, res) => {
+dbRouter.post("/api/v1/availability", requireAuthenticatedInternalOrExternalUser, async (req, res) => {
     const { availabilityDate, entries = [] } = req.body;
+    const requestedCompanyName = String(req.body.companyName ?? "").trim();
+    let availabilityOwner = null;
 
     if (!isValidAvailabilityDate(availabilityDate)) {
         return res.status(400).json({ error: "A valid availabilityDate is required" });
+    }
+
+    if (req.externalUser) {
+        availabilityOwner = {
+            companyName: req.externalUser.user.companyName,
+            emailAddress: req.externalUser.user.emailAddress,
+            createdByExternalUserId: req.externalUser.user.id,
+        };
+    } else if (req.user) {
+        if (!requestedCompanyName) {
+            return res.status(400).json({ error: "companyName is required when publishing availability as an internal user" });
+        }
+
+        const { data: externalCompanyUser, error: externalCompanyUserError } = await supabase
+            .from("ExternalUsers")
+            .select("id, emailAddress, companyName")
+            .ilike("companyName", requestedCompanyName)
+            .limit(1)
+            .maybeSingle();
+
+        if (externalCompanyUserError) {
+            return res.status(500).json({ error: externalCompanyUserError.message });
+        }
+
+        if (!externalCompanyUser) {
+            return res.status(400).json({ error: "Selected company was not found in external users" });
+        }
+
+        availabilityOwner = {
+            companyName: externalCompanyUser.companyName,
+            emailAddress: externalCompanyUser.emailAddress || "",
+            createdByExternalUserId: externalCompanyUser.id,
+        };
     }
 
     if (!Array.isArray(entries) || entries.length === 0) {
@@ -1029,9 +1093,9 @@ dbRouter.post("/api/v1/availability", requireAuthenticatedExternalUser, async (r
     }
 
     const rows = geocodedEntries.map((entry) => ({
-        companyName: req.externalUser.user.companyName,
-        emailAddress: req.externalUser.user.emailAddress,
-        createdByExternalUserId: req.externalUser.user.id,
+        companyName: availabilityOwner.companyName,
+        emailAddress: availabilityOwner.emailAddress,
+        createdByExternalUserId: availabilityOwner.createdByExternalUserId,
         country: entry.country,
         city: entry.city,
         postalCode: entry.postalCode,
