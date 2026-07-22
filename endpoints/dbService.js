@@ -302,7 +302,7 @@ const validateAvailabilityEntry = (entry, index) => {
     const missingFields = [];
 
     if (!entry.country) missingFields.push("country");
-    if (!entry.city) missingFields.push("city");
+    if (!entry.city && !entry.postalCode) missingFields.push("city or postalCode");
     if (!entry.vehicleCategory) missingFields.push("vehicleCategory");
     if (entry.availabilityDate && !isValidAvailabilityDate(entry.availabilityDate)) {
         return {
@@ -352,11 +352,14 @@ const geocodeAvailabilityEntry = async (entry) => {
     }
 
     const params = new URLSearchParams({
-        city: entry.city,
         limit: "1",
         format: "json",
         apiKey: process.env.GEOAPIFY_API_KEY,
     });
+
+    if (entry.city) {
+        params.set("city", entry.city);
+    }
 
     if (entry.postalCode) {
         params.set("postcode", entry.postalCode);
