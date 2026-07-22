@@ -214,7 +214,17 @@ const normalizeAdminRole = (adminRole) => {
     return adminRole === true || adminRole === "true" || adminRole === "Admin";
 };
 
-const vehicleCategories = new Set(["Caddy", "3.5T", "7.5T Truck - 24T Truck"]);
+const vehicleCategories = new Set(["Caddy", "3.5T Box", "3.5T CurtainSide", "7.5T Truck - 24T Truck"]);
+
+const normalizeVehicleCategory = (category) => {
+    const normalizedCategory = String(category ?? "").trim();
+
+    if (normalizedCategory === "3.5T") {
+        return "3.5T Box";
+    }
+
+    return normalizedCategory;
+};
 
 const isValidAvailabilityDate = (date) => {
     return typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date);
@@ -284,7 +294,7 @@ const normalizeAvailabilityEntry = (entry) => ({
     country: String(entry?.country ?? "").trim().toUpperCase(),
     postalCode: String(entry?.postalCode ?? "").trim(),
     city: String(entry?.city ?? "").trim(),
-    vehicleCategory: String(entry?.vehicleCategory ?? "").trim(),
+    vehicleCategory: normalizeVehicleCategory(entry?.vehicleCategory),
     availabilityDate: String(entry?.availabilityDate ?? "").trim(),
 });
 
