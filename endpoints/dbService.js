@@ -759,12 +759,12 @@ dbRouter.get("/unsubscribe", async (req, res) => {
         }
     }
 
-    if (process.env.SES_FROM_EMAIL) {
+    if (process.env.SMTP2GO_FROM_EMAIL) {
         try {
             const companyName = company.name || "Unknown";
 
             await sendEmail({
-                to: process.env.SES_FROM_EMAIL,
+                to: process.env.SMTP2GO_FROM_EMAIL,
                 subject: `Unsubscribe request: ${company.emailAddress}`,
                 text: [
                     "A company unsubscribed from ByExpress transport offers.",

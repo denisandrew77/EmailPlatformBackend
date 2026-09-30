@@ -6,7 +6,8 @@ import cookieParser from "cookie-parser";
 import { fileURLToPath } from "url";
 import { dbRouter } from "./endpoints/dbService.js";
 import { startEmailWorker } from "./workers/emailWorker.js";
-import { startEmailFeedbackWorker } from "./workers/emailFeedbackWorker.js";
+import { createSmtp2goWebhookRouter } from "./endpoints/smtp2goWebhook.js";
+import { supabase } from "./SupabaseClient/supabaseClient.js";
 
 dotenv.config();
 
@@ -24,6 +25,7 @@ app.get("/", (req, res) => {
 });
 
 app.use("/", dbRouter);
+app.use(createSmtp2goWebhookRouter(supabase));
 
 const PORT = process.env.PORT || 3001;
 
@@ -33,8 +35,4 @@ app.listen(PORT, () => {
 
 if (process.env.RUN_EMAIL_WORKER_IN_API === "true") {
     startEmailWorker();
-}
-
-if (process.env.RUN_EMAIL_FEEDBACK_WORKER_IN_API === "true") {
-    startEmailFeedbackWorker();
 }
