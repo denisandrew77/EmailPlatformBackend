@@ -337,6 +337,7 @@ const validateAvailabilityEntry = (entry, index) => {
 
 const toAvailabilityMapResponse = (availability, companiesById = new Map()) => ({
     id: availability.id,
+    companyId: availability.companyId,
     companyName: availability.companyName || "",
     emailAddress: availability.emailAddress || companiesById.get(availability.companyId)?.emailAddress || "",
     phoneNumber: availability.phoneNumber || companiesById.get(availability.companyId)?.phoneNumber || "",
