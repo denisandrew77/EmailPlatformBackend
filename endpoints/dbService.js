@@ -812,16 +812,48 @@ dbRouter.get("/unsubscribe", async (req, res) => {
 dbRouter.get("/getAllCompanies", async (req, res) => {
     if (!(await requireAdmin(req, res))) return;
 
-    const { data, error } = await supabase
-        .from("Companies")
-        .select("id, name, country, fiscalCode, emailAddress, created_at, threeTonnCategory, sevenTonnCategory, caddyCategory, unsubscribed")
-        .order("created_at", { ascending: false });
+    const [companiesResult, externalUsersResult] = await Promise.all([
+        supabase
+            .from("Companies")
+            .select("id, name, country, fiscalCode, emailAddress, created_at, threeTonnCategory, sevenTonnCategory, caddyCategory, unsubscribed"),
+        supabase
+            .from("ExternalUsers")
+            .select("id, companyName, emailAddress, createdAt"),
+    ]);
 
-    if (error) {
-        return res.status(500).json({ error: error.message });
+    if (companiesResult.error) {
+        return res.status(500).json({ error: companiesResult.error.message });
     }
 
-    res.json(data);
+    if (externalUsersResult.error) {
+        return res.status(500).json({ error: externalUsersResult.error.message });
+    }
+
+    const companies = (companiesResult.data ?? []).map((company) => ({
+        ...company,
+        recordType: "company",
+        rowKey: `company-${company.id}`,
+    }));
+    const externalUsers = (externalUsersResult.data ?? []).map((externalUser) => ({
+        id: externalUser.id,
+        name: externalUser.companyName || "",
+        country: "",
+        fiscalCode: "",
+        emailAddress: externalUser.emailAddress || "",
+        created_at: externalUser.createdAt || "",
+        threeTonnCategory: false,
+        sevenTonnCategory: false,
+        caddyCategory: false,
+        unsubscribed: "",
+        recordType: "externalUser",
+        rowKey: `external-user-${externalUser.id}`,
+    }));
+
+    res.json([...companies, ...externalUsers].sort((left, right) => {
+        const leftTime = left.created_at ? new Date(left.created_at).getTime() : 0;
+        const rightTime = right.created_at ? new Date(right.created_at).getTime() : 0;
+        return rightTime - leftTime;
+    }));
 });
 
 dbRouter.post("/addCompany", async (req, res) => {
