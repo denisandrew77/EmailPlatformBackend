@@ -52,8 +52,8 @@ const getAuthorizedExternalUser = async (req) => {
         if (!payload?.id || !hasExternalPayloadShape) return null;
 
         let query = supabase
-            .from("ExternalUsers")
-            .select('id, emailAddress, companyName, phoneNumber')
+            .from("Companies")
+            .select('id, emailAddress, name, phoneNumber')
             .eq("id", payload.id);
 
         if (payload.emailAddress) {
@@ -61,14 +61,21 @@ const getAuthorizedExternalUser = async (req) => {
         }
 
         if (payload.companyName) {
-            query = query.ilike("companyName", payload.companyName);
+            query = query.ilike("name", payload.companyName);
         }
 
-        const { data: user, error } = await query.maybeSingle();
+        const { data: company, error } = await query.maybeSingle();
 
-        if (error || !user) return null;
+        if (error || !company) return null;
 
-        return { token, payload, user };
+        return {
+            token,
+            payload,
+            user: {
+                ...company,
+                companyName: company.name,
+            },
+        };
     } catch {
         return null;
     }
@@ -328,11 +335,11 @@ const validateAvailabilityEntry = (entry, index) => {
     return null;
 };
 
-const toAvailabilityMapResponse = (availability, externalUsersById = new Map()) => ({
+const toAvailabilityMapResponse = (availability, companiesById = new Map()) => ({
     id: availability.id,
     companyName: availability.companyName || "",
-    emailAddress: availability.emailAddress || externalUsersById.get(availability.createdByExternalUserId)?.emailAddress || "",
-    phoneNumber: availability.phoneNumber || externalUsersById.get(availability.createdByExternalUserId)?.phoneNumber || "",
+    emailAddress: availability.emailAddress || companiesById.get(availability.companyId)?.emailAddress || "",
+    phoneNumber: availability.phoneNumber || companiesById.get(availability.companyId)?.phoneNumber || "",
     country: availability.country,
     postalCode: availability.postalCode,
     city: availability.city,
@@ -423,33 +430,33 @@ const getPublicBaseUrl = (req) => {
     return process.env.PUBLIC_BACKEND_URL || `${req.protocol}://${req.get("host")}`;
 };
 
-const createExternalUserSignInResponse = async (externalUser, password) => {
-    if (!isPasswordHash(externalUser.password)) {
+const createCompanySignInResponse = async (company, password) => {
+    if (!isPasswordHash(company.password)) {
         await supabase
-            .from("ExternalUsers")
+            .from("Companies")
             .update({ password: hashPassword(password) })
-            .eq("id", externalUser.id);
+            .eq("id", company.id);
     }
 
     const token = jwt.sign({
-        id: externalUser.id,
-        userName: externalUser.emailAddress,
-        emailAddress: externalUser.emailAddress,
+        id: company.id,
+        userName: company.emailAddress,
+        emailAddress: company.emailAddress,
         userType: "external",
-        companyName: externalUser.companyName,
-        phoneNumber: externalUser.phoneNumber || "",
+        companyName: company.name,
+        phoneNumber: company.phoneNumber || "",
         adminRole: false,
     }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: "8h" });
 
     return {
         token,
         user: {
-            id: externalUser.id,
-            userName: externalUser.emailAddress,
-            emailAddress: externalUser.emailAddress,
+            id: company.id,
+            userName: company.emailAddress,
+            emailAddress: company.emailAddress,
             userType: "external",
-            companyName: externalUser.companyName,
-            phoneNumber: externalUser.phoneNumber || "",
+            companyName: company.name,
+            phoneNumber: company.phoneNumber || "",
             adminRole: false,
         },
     };
@@ -518,16 +525,18 @@ dbRouter.post("/signIn", async (req, res) => {
         });
     }
 
-    const { data: externalUser, error: externalUserError } = await supabase
-        .from("ExternalUsers")
+    const { data: company, error: companyError } = await supabase
+        .from("Companies")
         .select("*")
         .ilike("emailAddress", loginIdentifier)
+        .not("password", "is", null)
+        .limit(1)
         .maybeSingle();
 
-    if (externalUserError) return res.status(500).json({ error: externalUserError.message });
+    if (companyError) return res.status(500).json({ error: companyError.message });
 
-    if (externalUser && verifyPassword(password, externalUser.password)) {
-        const response = await createExternalUserSignInResponse(externalUser, password);
+    if (company && verifyPassword(password, company.password)) {
+        const response = await createCompanySignInResponse(company, password);
         return res.json(response);
     }
 
@@ -539,51 +548,64 @@ dbRouter.post("/api/v1/external/register", async (req, res) => {
     const password = String(req.body.password ?? "");
     const companyName = String(req.body.companyName ?? "").trim();
     const phoneNumber = String(req.body.phoneNumber ?? "").trim();
+    const caddyCategory = req.body.caddyCategory === true;
+    const threeTonnCategory = req.body.threeTonnCategory === true;
+    const sevenTonnCategory = req.body.sevenTonnCategory === true;
 
     if (!process.env.ACCESS_TOKEN_SECRET) {
         return res.status(500).json({ error: "ACCESS_TOKEN_SECRET is not configured" });
     }
 
-    if (!emailAddress || !emailAddress.includes("@") || password.length < 8 || !companyName || !phoneNumber) {
+    if (
+        !emailAddress || !emailAddress.includes("@") || password.length < 8 || !companyName || !phoneNumber
+        || (!caddyCategory && !threeTonnCategory && !sevenTonnCategory)
+    ) {
         return res.status(400).json({
-            error: "Email address, password with at least 8 characters, company name, and phone number are required",
+            error: "Email address, password with at least 8 characters, company name, phone number, and at least one category are required",
         });
     }
 
-    const { data: existingExternalUser, error: existingExternalUserError } = await supabase
-        .from("ExternalUsers")
-        .select("id")
+    const { data: existingCompany, error: existingCompanyError } = await supabase
+        .from("Companies")
+        .select("id, password")
         .ilike("emailAddress", emailAddress)
+        .order("id", { ascending: true })
+        .limit(1)
         .maybeSingle();
 
-    if (existingExternalUserError) {
-        return res.status(500).json({ error: existingExternalUserError.message });
+    if (existingCompanyError) {
+        return res.status(500).json({ error: existingCompanyError.message });
     }
 
-    if (existingExternalUser) {
+    if (existingCompany?.password) {
         return res.status(409).json({ error: "An account already exists for this email address" });
     }
 
-    const { data: externalUser, error: externalUserError } = await supabase
-        .from("ExternalUsers")
-        .insert({
-            emailAddress,
-            password: hashPassword(password),
-            companyName,
-            phoneNumber,
-        })
+    const accountValues = {
+        emailAddress,
+        password: hashPassword(password),
+        name: companyName,
+        phoneNumber,
+        caddyCategory,
+        threeTonnCategory,
+        sevenTonnCategory,
+    };
+    const accountQuery = existingCompany
+        ? supabase.from("Companies").update(accountValues).eq("id", existingCompany.id)
+        : supabase.from("Companies").insert({ ...accountValues, country: "", fiscalCode: "" });
+    const { data: companyAccount, error: companyAccountError } = await accountQuery
         .select("*")
         .single();
 
-    if (externalUserError) {
-        if (externalUserError.code === "23505") {
+    if (companyAccountError) {
+        if (companyAccountError.code === "23505") {
             return res.status(409).json({ error: "An account already exists for this email address" });
         }
 
-        return res.status(500).json({ error: externalUserError.message });
+        return res.status(500).json({ error: companyAccountError.message });
     }
 
-    const response = await createExternalUserSignInResponse(externalUser, password);
+    const response = await createCompanySignInResponse(companyAccount, password);
     return res.status(201).json(response);
 });
 
@@ -612,31 +634,20 @@ dbRouter.get("/getAllUsers", async (req, res) => {
 
 dbRouter.get("/api/v1/internal/availability-companies", requireAuthenticatedUser, requireInternalUser, async (req, res) => {
     const { data, error } = await supabase
-        .from("ExternalUsers")
-        .select("companyName, emailAddress")
-        .not("companyName", "is", null)
-        .order("companyName", { ascending: true });
+        .from("Companies")
+        .select("id, name, emailAddress")
+        .not("name", "is", null)
+        .order("name", { ascending: true });
 
     if (error) {
         return res.status(500).json({ error: error.message });
     }
 
-    const companiesByName = new Map();
-
-    (data ?? []).forEach((externalUser) => {
-        const companyName = String(externalUser.companyName ?? "").trim();
-
-        if (!companyName || companiesByName.has(companyName.toLowerCase())) {
-            return;
-        }
-
-        companiesByName.set(companyName.toLowerCase(), {
-            companyName,
-            emailAddress: externalUser.emailAddress || "",
-        });
-    });
-
-    res.json([...companiesByName.values()]);
+    res.json((data ?? []).map((company) => ({
+        id: company.id,
+        companyName: company.name,
+        emailAddress: company.emailAddress || "",
+    })));
 });
 
 const handleCreateUser = async (req, res) => {
@@ -836,71 +847,6 @@ dbRouter.get("/getAllCompanies", async (req, res) => {
     });
 });
 
-dbRouter.post("/editExternalUser", async (req, res) => {
-    if (!(await requireAdmin(req, res))) return;
-
-    const id = Number(req.body.id);
-    const companyName = String(req.body.companyName ?? "").trim();
-    const emailAddress = normalizeEmail(req.body.emailAddress);
-    const phoneNumber = String(req.body.phoneNumber ?? "").trim();
-    const password = String(req.body.password ?? "");
-
-    if (!Number.isInteger(id) || id <= 0 || !companyName || !emailAddress.includes("@") || !phoneNumber) {
-        return res.status(400).json({ error: "Company name, email address, and phone number are required" });
-    }
-
-    if (password && password.length < 8) {
-        return res.status(400).json({ error: "Password must have at least 8 characters" });
-    }
-
-    const updates = {
-        companyName,
-        emailAddress,
-        phoneNumber,
-        updatedAt: new Date().toISOString(),
-    };
-
-    if (password) updates.password = hashPassword(password);
-
-    const { data, error } = await supabase
-        .from("ExternalUsers")
-        .update(updates)
-        .eq("id", id)
-        .select("id")
-        .maybeSingle();
-
-    if (error) {
-        if (error.code === "23505") {
-            return res.status(409).json({ error: "An account already exists for this email address" });
-        }
-
-        return res.status(500).json({ error: error.message });
-    }
-
-    if (!data) return res.status(404).json({ error: "Carrier account not found" });
-    return res.json(true);
-});
-
-dbRouter.post("/deleteExternalUser", async (req, res) => {
-    if (!(await requireAdmin(req, res))) return;
-
-    const id = Number(req.body.id);
-    if (!Number.isInteger(id) || id <= 0) {
-        return res.status(400).json({ error: "A valid carrier account id is required" });
-    }
-
-    const { data, error } = await supabase
-        .from("ExternalUsers")
-        .delete()
-        .eq("id", id)
-        .select("id")
-        .maybeSingle();
-
-    if (error) return res.status(500).json({ error: error.message });
-    if (!data) return res.status(404).json({ error: "Carrier account not found" });
-    return res.json(true);
-});
-
 dbRouter.post("/addCompany", async (req, res) => {
     if (!(await requireAdmin(req, res))) return;
 
@@ -909,6 +855,8 @@ dbRouter.post("/addCompany", async (req, res) => {
         country,
         fiscalCode,
         emailAddress,
+        phoneNumber = "",
+        password,
         threeTonnCategory = false,
         sevenTonnCategory = false,
         caddyCategory = false,
@@ -918,6 +866,12 @@ dbRouter.post("/addCompany", async (req, res) => {
         return res.status(400).json(false);
     }
 
+    const normalizedPassword = String(password ?? "");
+
+    if (normalizedPassword && normalizedPassword.length < 8) {
+        return res.status(400).json({ error: "Password must have at least 8 characters" });
+    }
+
     const { error } = await supabase
         .from("Companies")
         .insert({
@@ -925,6 +879,8 @@ dbRouter.post("/addCompany", async (req, res) => {
             country,
             fiscalCode,
             emailAddress,
+            phoneNumber: String(phoneNumber).trim(),
+            password: normalizedPassword ? hashPassword(normalizedPassword) : null,
             threeTonnCategory: Boolean(threeTonnCategory),
             sevenTonnCategory: Boolean(sevenTonnCategory),
             caddyCategory: Boolean(caddyCategory),
@@ -946,6 +902,8 @@ dbRouter.post("/editCompany", async (req, res) => {
         country,
         fiscalCode,
         emailAddress,
+        phoneNumber = "",
+        password,
         threeTonnCategory = false,
         sevenTonnCategory = false,
         caddyCategory = false,
@@ -955,17 +913,28 @@ dbRouter.post("/editCompany", async (req, res) => {
         return res.status(400).json(false);
     }
 
+    const normalizedPassword = String(password ?? "");
+
+    if (normalizedPassword && normalizedPassword.length < 8) {
+        return res.status(400).json({ error: "Password must have at least 8 characters" });
+    }
+
+    const updates = {
+        name,
+        country,
+        fiscalCode,
+        emailAddress,
+        phoneNumber: String(phoneNumber).trim(),
+        threeTonnCategory: Boolean(threeTonnCategory),
+        sevenTonnCategory: Boolean(sevenTonnCategory),
+        caddyCategory: Boolean(caddyCategory),
+    };
+
+    if (normalizedPassword) updates.password = hashPassword(normalizedPassword);
+
     const { error } = await supabase
         .from("Companies")
-        .update({
-            name,
-            country,
-            fiscalCode,
-            emailAddress,
-            threeTonnCategory: Boolean(threeTonnCategory),
-            sevenTonnCategory: Boolean(sevenTonnCategory),
-            caddyCategory: Boolean(caddyCategory),
-        })
+        .update(updates)
         .eq("id", id);
 
     if (error) {
@@ -1090,7 +1059,7 @@ dbRouter.post("/queueCompanyEmailCampaign", async (req, res) => {
 
 dbRouter.post("/api/v1/availability", requireAuthenticatedInternalOrExternalUser, async (req, res) => {
     const { availabilityDate, entries = [] } = req.body;
-    const requestedCompanyName = String(req.body.companyName ?? "").trim();
+    const requestedCompanyId = Number(req.body.companyId);
     let availabilityOwner = null;
 
     if (!isValidAvailabilityDate(availabilityDate)) {
@@ -1101,32 +1070,31 @@ dbRouter.post("/api/v1/availability", requireAuthenticatedInternalOrExternalUser
         availabilityOwner = {
             companyName: req.externalUser.user.companyName,
             emailAddress: req.externalUser.user.emailAddress,
-            createdByExternalUserId: req.externalUser.user.id,
+            companyId: req.externalUser.user.id,
         };
     } else if (req.user) {
-        if (!requestedCompanyName) {
-            return res.status(400).json({ error: "companyName is required when publishing availability as an internal user" });
+        if (!Number.isInteger(requestedCompanyId) || requestedCompanyId <= 0) {
+            return res.status(400).json({ error: "A valid companyId is required when publishing availability as an internal user" });
         }
 
-        const { data: externalCompanyUser, error: externalCompanyUserError } = await supabase
-            .from("ExternalUsers")
-            .select("id, emailAddress, companyName")
-            .ilike("companyName", requestedCompanyName)
-            .limit(1)
+        const { data: selectedCompany, error: selectedCompanyError } = await supabase
+            .from("Companies")
+            .select("id, emailAddress, name")
+            .eq("id", requestedCompanyId)
             .maybeSingle();
 
-        if (externalCompanyUserError) {
-            return res.status(500).json({ error: externalCompanyUserError.message });
+        if (selectedCompanyError) {
+            return res.status(500).json({ error: selectedCompanyError.message });
         }
 
-        if (!externalCompanyUser) {
-            return res.status(400).json({ error: "Selected company was not found in external users" });
+        if (!selectedCompany) {
+            return res.status(400).json({ error: "Selected company was not found" });
         }
 
         availabilityOwner = {
-            companyName: externalCompanyUser.companyName,
-            emailAddress: externalCompanyUser.emailAddress || "",
-            createdByExternalUserId: externalCompanyUser.id,
+            companyName: selectedCompany.name,
+            emailAddress: selectedCompany.emailAddress || "",
+            companyId: selectedCompany.id,
         };
     }
 
@@ -1190,7 +1158,7 @@ dbRouter.post("/api/v1/availability", requireAuthenticatedInternalOrExternalUser
     const rows = geocodedEntries.map((entry) => ({
         companyName: availabilityOwner.companyName,
         emailAddress: availabilityOwner.emailAddress,
-        createdByExternalUserId: availabilityOwner.createdByExternalUserId,
+        companyId: availabilityOwner.companyId,
         country: entry.country,
         city: entry.city,
         postalCode: entry.postalCode,
@@ -1250,27 +1218,27 @@ dbRouter.get("/api/v1/internal/availability", requireAuthenticatedUser, requireI
         return res.status(500).json({ error: availabilityError.message });
     }
 
-    const externalUserIds = [...new Set(
+    const companyIds = [...new Set(
         (availabilityRows ?? [])
-            .map((row) => row.createdByExternalUserId)
+            .map((row) => row.companyId)
             .filter(Boolean)
     )];
-    let externalUsersById = new Map();
+    let companiesById = new Map();
 
-    if (externalUserIds.length) {
-        const { data: externalUsers, error: externalUsersError } = await supabase
-            .from("ExternalUsers")
+    if (companyIds.length) {
+        const { data: companies, error: companiesError } = await supabase
+            .from("Companies")
             .select("id, emailAddress, phoneNumber")
-            .in("id", externalUserIds);
+            .in("id", companyIds);
 
-        if (externalUsersError) {
-            return res.status(500).json({ error: externalUsersError.message });
+        if (companiesError) {
+            return res.status(500).json({ error: companiesError.message });
         }
 
-        externalUsersById = new Map(externalUsers.map((externalUser) => [externalUser.id, externalUser]));
+        companiesById = new Map(companies.map((company) => [company.id, company]));
     }
 
-    res.json((availabilityRows ?? []).map((availability) => toAvailabilityMapResponse(availability, externalUsersById)));
+    res.json((availabilityRows ?? []).map((availability) => toAvailabilityMapResponse(availability, companiesById)));
 });
 
 dbRouter.post("/addQuotation", requireAuthenticatedUser, requireInternalUser, async (req, res) => {
