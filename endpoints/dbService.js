@@ -812,48 +812,28 @@ dbRouter.get("/unsubscribe", async (req, res) => {
 dbRouter.get("/getAllCompanies", async (req, res) => {
     if (!(await requireAdmin(req, res))) return;
 
-    const [companiesResult, externalUsersResult] = await Promise.all([
-        supabase
-            .from("Companies")
-            .select("id, name, country, fiscalCode, emailAddress, created_at, threeTonnCategory, sevenTonnCategory, caddyCategory, unsubscribed"),
-        supabase
-            .from("ExternalUsers")
-            .select("id, companyName, emailAddress, phoneNumber, createdAt"),
-    ]);
+    const offset = Math.max(Number.parseInt(req.query.offset, 10) || 0, 0);
+    const search = String(req.query.search ?? "").trim().slice(0, 200);
+    const { data, error } = await supabase.rpc("get_company_directory", {
+        p_search: search,
+        p_three_tonn: req.query.threeTonnCategory === "true",
+        p_seven_tonn: req.query.sevenTonnCategory === "true",
+        p_caddy: req.query.caddyCategory === "true",
+        p_limit: 30,
+        p_offset: offset,
+    });
 
-    if (companiesResult.error) {
-        return res.status(500).json({ error: companiesResult.error.message });
-    }
+    if (error) return res.status(500).json({ error: error.message });
 
-    if (externalUsersResult.error) {
-        return res.status(500).json({ error: externalUsersResult.error.message });
-    }
+    const rows = data ?? [];
+    const total = Number(rows[0]?.total_count ?? 0);
+    const items = rows.map(({ total_count, ...company }) => company);
 
-    const companies = (companiesResult.data ?? []).map((company) => ({
-        ...company,
-        recordType: "company",
-        rowKey: `company-${company.id}`,
-    }));
-    const externalUsers = (externalUsersResult.data ?? []).map((externalUser) => ({
-        id: externalUser.id,
-        name: externalUser.companyName || "",
-        country: "",
-        fiscalCode: "",
-        emailAddress: externalUser.emailAddress || "",
-        phoneNumber: externalUser.phoneNumber || "",
-        created_at: externalUser.createdAt || "",
-        threeTonnCategory: false,
-        sevenTonnCategory: false,
-        caddyCategory: false,
-        unsubscribed: "",
-        recordType: "externalUser",
-        rowKey: `external-user-${externalUser.id}`,
-    }));
-
-    res.json([...companies, ...externalUsers].sort((left, right) => (
-        left.name.localeCompare(right.name, undefined, { sensitivity: "base" })
-        || left.emailAddress.localeCompare(right.emailAddress, undefined, { sensitivity: "base" })
-    )));
+    res.json({
+        items,
+        total,
+        hasMore: offset + items.length < total,
+    });
 });
 
 dbRouter.post("/editExternalUser", async (req, res) => {
