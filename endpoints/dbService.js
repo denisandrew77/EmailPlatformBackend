@@ -818,7 +818,7 @@ dbRouter.get("/getAllCompanies", async (req, res) => {
             .select("id, name, country, fiscalCode, emailAddress, created_at, threeTonnCategory, sevenTonnCategory, caddyCategory, unsubscribed"),
         supabase
             .from("ExternalUsers")
-            .select("id, companyName, emailAddress, createdAt"),
+            .select("id, companyName, emailAddress, phoneNumber, createdAt"),
     ]);
 
     if (companiesResult.error) {
@@ -840,6 +840,7 @@ dbRouter.get("/getAllCompanies", async (req, res) => {
         country: "",
         fiscalCode: "",
         emailAddress: externalUser.emailAddress || "",
+        phoneNumber: externalUser.phoneNumber || "",
         created_at: externalUser.createdAt || "",
         threeTonnCategory: false,
         sevenTonnCategory: false,
@@ -849,11 +850,75 @@ dbRouter.get("/getAllCompanies", async (req, res) => {
         rowKey: `external-user-${externalUser.id}`,
     }));
 
-    res.json([...companies, ...externalUsers].sort((left, right) => {
-        const leftTime = left.created_at ? new Date(left.created_at).getTime() : 0;
-        const rightTime = right.created_at ? new Date(right.created_at).getTime() : 0;
-        return rightTime - leftTime;
-    }));
+    res.json([...companies, ...externalUsers].sort((left, right) => (
+        left.name.localeCompare(right.name, undefined, { sensitivity: "base" })
+        || left.emailAddress.localeCompare(right.emailAddress, undefined, { sensitivity: "base" })
+    )));
+});
+
+dbRouter.post("/editExternalUser", async (req, res) => {
+    if (!(await requireAdmin(req, res))) return;
+
+    const id = Number(req.body.id);
+    const companyName = String(req.body.companyName ?? "").trim();
+    const emailAddress = normalizeEmail(req.body.emailAddress);
+    const phoneNumber = String(req.body.phoneNumber ?? "").trim();
+    const password = String(req.body.password ?? "");
+
+    if (!Number.isInteger(id) || id <= 0 || !companyName || !emailAddress.includes("@") || !phoneNumber) {
+        return res.status(400).json({ error: "Company name, email address, and phone number are required" });
+    }
+
+    if (password && password.length < 8) {
+        return res.status(400).json({ error: "Password must have at least 8 characters" });
+    }
+
+    const updates = {
+        companyName,
+        emailAddress,
+        phoneNumber,
+        updatedAt: new Date().toISOString(),
+    };
+
+    if (password) updates.password = hashPassword(password);
+
+    const { data, error } = await supabase
+        .from("ExternalUsers")
+        .update(updates)
+        .eq("id", id)
+        .select("id")
+        .maybeSingle();
+
+    if (error) {
+        if (error.code === "23505") {
+            return res.status(409).json({ error: "An account already exists for this email address" });
+        }
+
+        return res.status(500).json({ error: error.message });
+    }
+
+    if (!data) return res.status(404).json({ error: "Carrier account not found" });
+    return res.json(true);
+});
+
+dbRouter.post("/deleteExternalUser", async (req, res) => {
+    if (!(await requireAdmin(req, res))) return;
+
+    const id = Number(req.body.id);
+    if (!Number.isInteger(id) || id <= 0) {
+        return res.status(400).json({ error: "A valid carrier account id is required" });
+    }
+
+    const { data, error } = await supabase
+        .from("ExternalUsers")
+        .delete()
+        .eq("id", id)
+        .select("id")
+        .maybeSingle();
+
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data) return res.status(404).json({ error: "Carrier account not found" });
+    return res.json(true);
 });
 
 dbRouter.post("/addCompany", async (req, res) => {
