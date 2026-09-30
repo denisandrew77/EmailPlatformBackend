@@ -910,7 +910,7 @@ dbRouter.post("/editCompany", async (req, res) => {
         caddyCategory = false,
     } = req.body;
 
-    if (!id || !name || !country || !fiscalCode || !emailAddress) {
+    if (!id || !name || !emailAddress) {
         return res.status(400).json(false);
     }
 
