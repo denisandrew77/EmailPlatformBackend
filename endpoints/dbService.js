@@ -4,6 +4,10 @@ import { supabase } from "../SupabaseClient/supabaseClient.js";
 import { enqueueEmailJob, enqueueEmailJobs } from "../services/emailQueueService.js";
 import { sendEmail } from "../services/emailSenderService.js";
 import { hashPassword, isPasswordHash, verifyPassword } from "../services/passwordService.js";
+import {
+    buildUncategorizedCompanyEmailJobs,
+    normalizeUncategorizedCompanyMessage,
+} from "../services/uncategorizedCompanyEmail.js";
 
 export const dbRouter = Router();
 
@@ -1055,6 +1059,39 @@ dbRouter.post("/queueCompanyEmailCampaign", async (req, res) => {
         res.json({ queued: true, count: queued.length, jobs: queued });
     } catch (queueError) {
         res.status(500).json({ error: queueError.message });
+    }
+});
+
+dbRouter.post("/queueUncategorizedCompanyEmail", async (req, res) => {
+    if (!(await requireAdmin(req, res))) return;
+
+    let message;
+    try {
+        message = normalizeUncategorizedCompanyMessage(req.body.message);
+    } catch (validationError) {
+        return res.status(400).json({ error: validationError.message });
+    }
+
+    const { data: companies, error } = await supabase
+        .from("Companies")
+        .select("id, name, emailAddress, threeTonnCategory, sevenTonnCategory, caddyCategory, unsubscribed")
+        .or("unsubscribed.is.false,unsubscribed.is.null");
+
+    if (error) {
+        return res.status(500).json({ error: error.message });
+    }
+
+    const jobs = buildUncategorizedCompanyEmailJobs(
+        companies,
+        message,
+        (company) => createUnsubscribeUrl(req, company),
+    );
+
+    try {
+        const queued = await enqueueEmailJobs(jobs);
+        return res.json({ queued: true, count: queued.length });
+    } catch (queueError) {
+        return res.status(500).json({ error: queueError.message });
     }
 });
 

@@ -47,35 +47,45 @@ const deleteMessage = async (receiptHandle) => {
     await sqsClient.send(command);
 };
 
-const canSendCompanyEmail = async (job) => {
+export const createCompanyEmailEligibilityChecker = (database, logger = console) => async (job) => {
     const companyId = job.metadata?.companyId;
 
-    // Email jobs that are not associated with a company keep their existing behavior.
     if (!companyId) return true;
 
-    const { data: company, error } = await supabase
+    const { data: company, error } = await database
         .from("Companies")
-        .select("id, unsubscribed")
+        .select("id, unsubscribed, threeTonnCategory, sevenTonnCategory, caddyCategory")
         .eq("id", companyId)
         .maybeSingle();
 
-    if (error) {
-        throw error;
-    }
+    if (error) throw error;
 
-    // Do not send stale jobs for companies that were removed after queueing.
     if (!company) {
-        console.warn(`Skipped email to ${job.to}: company ${companyId} no longer exists`);
+        logger.warn(`Skipped email to ${job.to}: company ${companyId} no longer exists`);
         return false;
     }
 
     if (company.unsubscribed === true) {
-        console.log(`Skipped email to ${job.to}: company ${companyId} is unsubscribed`);
+        logger.log(`Skipped email to ${job.to}: company ${companyId} is unsubscribed`);
+        return false;
+    }
+
+    if (
+        job.metadata?.campaignType === "uncategorized-companies"
+        && (
+            company.threeTonnCategory === true
+            || company.sevenTonnCategory === true
+            || company.caddyCategory === true
+        )
+    ) {
+        logger.log(`Skipped email to ${job.to}: company ${companyId} now has a category`);
         return false;
     }
 
     return true;
 };
+
+const canSendCompanyEmail = createCompanyEmailEligibilityChecker(supabase);
 
 const processMessage = async (message) => {
     const job = JSON.parse(message.Body);
