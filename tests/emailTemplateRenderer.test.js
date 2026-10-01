@@ -15,13 +15,13 @@ test("plain messages use the quotation email shell and escape custom content", (
     assert.equal(rendered.subject, "A message from ByExpress");
     assert.equal(
         rendered.text,
-        "Choose <one> category\nThank you\n\nBest regards,\nByExpress Spain & France\n\nTo stop receiving transport offers, use this unsubscribe link:\nhttps://example.com/unsubscribe?token=test",
+        "Choose <one> category\nThank you\n\nBest regards,\nByExpress Spain & France\n\nIf you do not want to receive our transport offers any more, please click here: https://example.com/unsubscribe?token=test",
     );
     assert.match(rendered.html, /background:#0b2a5b/);
     assert.match(rendered.html, /Choose &lt;one&gt; category\nThank you/);
     assert.match(rendered.html, /Best regards,/);
     assert.match(rendered.html, /If you do not want to receive our transport offers any more, please <a href="https:\/\/example\.com\/unsubscribe\?token=test"[^>]*>click here<\/a>\./);
-    assert.match(rendered.text, /To stop receiving transport offers/);
+    assert.match(rendered.text, /If you do not want to receive our transport offers any more, please click here: https:\/\/example\.com\/unsubscribe\?token=test/);
     assert.match(rendered.text, /https:\/\/example\.com\/unsubscribe\?token=test/);
     assert.doesNotMatch(rendered.text, /Hello,|Thank you for your answer/);
     assert.doesNotMatch(rendered.html, /Hello,|Thank you for your answer/);
@@ -41,7 +41,7 @@ test("quotation requests include the unsubscribe link in their plain-text altern
         },
     });
 
-    assert.match(rendered.text, /To stop receiving transport offers/);
+    assert.match(rendered.text, /If you do not want to receive our transport offers any more, please click here: https:\/\/example\.com\/unsubscribe\?token=quote/);
     assert.match(rendered.text, /https:\/\/example\.com\/unsubscribe\?token=quote/);
     assert.match(rendered.html, /href="https:\/\/example\.com\/unsubscribe\?token=quote"/);
     assert.match(rendered.html, /If you do not want to receive our transport offers any more, please <a href="https:\/\/example\.com\/unsubscribe\?token=quote"[^>]*>click here<\/a>\./);

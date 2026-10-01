@@ -98,8 +98,7 @@ const buildText = (data) => {
   if (data.unsubscribeUrl) {
     textLines.push(
       "",
-      "To stop receiving transport offers, use this unsubscribe link:",
-      data.unsubscribeUrl,
+      `If you do not want to receive our transport offers any more, please click here: ${data.unsubscribeUrl}`,
     );
   }
 
