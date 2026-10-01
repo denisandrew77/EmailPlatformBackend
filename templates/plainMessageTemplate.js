@@ -9,12 +9,22 @@ export const buildPlainMessageEmail = (data = {}) => {
   const logoUrl = process.env.BYEXPRESS_LOGO_URL;
   const subject = String(data.subject || "A message from ByExpress").trim();
   const message = String(data.message || "").trim();
-  const text = [
+  const textLines = [
     message,
     "",
     "Best regards,",
     "ByExpress Spain & France",
-  ].join("\n");
+  ];
+
+  if (data.unsubscribeUrl) {
+    textLines.push(
+      "",
+      "To stop receiving transport offers, use this unsubscribe link:",
+      data.unsubscribeUrl,
+    );
+  }
+
+  const text = textLines.join("\n");
 
   const html = `
 <!doctype html>

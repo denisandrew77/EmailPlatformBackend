@@ -86,14 +86,24 @@ const buildText = (data) => {
     lines.push("", "Observations:", observations);
   }
 
-  return [
+  const textLines = [
     ...lines,
     "",
     "Thank you for your answer.",
     "",
     "Best regards,",
     "ByExpress Spain & France",
-  ].join("\n");
+  ];
+
+  if (data.unsubscribeUrl) {
+    textLines.push(
+      "",
+      "To stop receiving transport offers, use this unsubscribe link:",
+      data.unsubscribeUrl,
+    );
+  }
+
+  return textLines.join("\n");
 };
 
 export const buildQuotationRequestEmail = (data) => {
