@@ -13,11 +13,12 @@ test("plain messages use the quotation email shell and escape custom content", (
     });
 
     assert.equal(rendered.subject, "A message from ByExpress");
-    assert.match(rendered.text, /Choose <one> category\nThank you/);
-    assert.match(rendered.text, /Best regards,\nByExpress Spain & France/);
+    assert.equal(rendered.text, "Choose <one> category\nThank you\n\nBest regards,\nByExpress Spain & France");
     assert.match(rendered.html, /background:#0b2a5b/);
     assert.match(rendered.html, /Choose &lt;one&gt; category\nThank you/);
     assert.match(rendered.html, /Best regards,/);
     assert.match(rendered.html, /click here/);
+    assert.doesNotMatch(rendered.text, /Hello,|Thank you for your answer/);
+    assert.doesNotMatch(rendered.html, /Hello,|Thank you for your answer/);
     assert.doesNotMatch(rendered.html, /Choose <one>/);
 });

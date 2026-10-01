@@ -10,11 +10,7 @@ export const buildPlainMessageEmail = (data = {}) => {
   const subject = String(data.subject || "A message from ByExpress").trim();
   const message = String(data.message || "").trim();
   const text = [
-    "Hello,",
-    "",
     message,
-    "",
-    "Thank you for your answer.",
     "",
     "Best regards,",
     "ByExpress Spain & France",
@@ -32,10 +28,7 @@ export const buildPlainMessageEmail = (data = {}) => {
         </div>
 
         <div style="padding:28px;">
-          <p style="font-size:16px; line-height:1.5; margin:0 0 16px;">Hello,</p>
           <div style="font-size:16px; line-height:1.6; white-space:pre-line; margin:0 0 24px;">${escapeHtml(message)}</div>
-
-          <p style="font-size:16px; line-height:1.5; margin:0 0 24px;">Thank you for your answer.</p>
 
           <p style="font-size:15px; line-height:1.5; margin:0;">Best regards,</p>
           <p style="font-size:15px; line-height:1.5; font-weight:700; color:#0b2a5b; margin:0;">ByExpress Spain &amp; France</p>
