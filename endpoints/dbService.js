@@ -1003,6 +1003,16 @@ dbRouter.post("/queueCompanyEmailCampaign", async (req, res) => {
         return res.status(400).json(false);
     }
 
+    const selectedCategoryFilters = [
+        threeTonnCategory === true ? "threeTonnCategory.eq.true" : null,
+        sevenTonnCategory === true ? "sevenTonnCategory.eq.true" : null,
+        caddyCategory === true ? "caddyCategory.eq.true" : null,
+    ].filter(Boolean);
+
+    if (!selectedCategoryFilters.length) {
+        return res.status(400).json({ error: "Select at least one vehicle category" });
+    }
+
     let query = supabase
         .from("Companies")
         .select("id, name, emailAddress, threeTonnCategory, sevenTonnCategory, caddyCategory, unsubscribed")
@@ -1010,19 +1020,13 @@ dbRouter.post("/queueCompanyEmailCampaign", async (req, res) => {
 
     if (companyIds.length) {
         query = query.in("id", companyIds);
-    } else if (threeTonnCategory || sevenTonnCategory || caddyCategory) {
-        const selectedCategoryFilters = [
-            threeTonnCategory ? "threeTonnCategory.eq.true" : null,
-            sevenTonnCategory ? "sevenTonnCategory.eq.true" : null,
-            caddyCategory ? "caddyCategory.eq.true" : null,
-        ].filter(Boolean);
+    }
 
-        if (selectedCategoryFilters.length === 1) {
-            const [column] = selectedCategoryFilters[0].split(".");
-            query = query.eq(column, true);
-        } else {
-            query = query.or(selectedCategoryFilters.join(","));
-        }
+    if (selectedCategoryFilters.length === 1) {
+        const [column] = selectedCategoryFilters[0].split(".");
+        query = query.eq(column, true);
+    } else {
+        query = query.or(selectedCategoryFilters.join(","));
     }
 
     const { data: companies, error } = await query;
