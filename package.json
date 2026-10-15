@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --test tests/*.test.js",
+    "test:rangebuddy": "node --test tests/rangebuddy*.test.js",
     "start": "node app.js",
     "dev": "nodemon app.js",
     "worker:email": "node workers/emailWorker.js",
@@ -23,8 +24,11 @@
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.7.1",
     "jsonwebtoken": "^9.0.3",
-    "morgan": "^1.11.0"
+    "luxon": "^3.7.2",
+    "morgan": "^1.11.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"

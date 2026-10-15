@@ -153,7 +153,7 @@ const requireInternalUser = (req, res, next) => {
     next();
 };
 
-const requireAdmin = async (req, res) => {
+export const requireAdmin = async (req, res) => {
     const user = await getAuthorizedUser(req);
 
     if (!user) {
