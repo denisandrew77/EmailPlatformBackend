@@ -28,6 +28,9 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
     let error = null;
     let results = [];
     let created = true;
+    const activeSession = { id: 3, van_id: 1, start_kms: 100, started_at: "2026-10-17T10:00:00Z",
+        ended_at: null, is_active: true, average_consumption: 18.33, average_fuel_price: 7.33 };
+    let session = activeSession;
     const database = createClient("https://rangebuddy.example.test", "backend-service-key", {
         auth: { persistSession: false, autoRefreshToken: false },
         global: { fetch: async (input, init) => {
@@ -50,10 +53,14 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
                 return Response.json(page, { headers: { "Content-Range": `${offset}-${offset + page.length - 1}/${results.length}` } });
             }
             if (url.pathname === "/rest/v1/rpc/rangebuddy_activate") return Response.json({ created, van });
+            if (url.pathname === "/rest/v1/rpc/rangebuddy_current_session") return Response.json(session);
+            if (url.pathname === "/rest/v1/rpc/rangebuddy_start_session") return Response.json(activeSession);
+            if (url.pathname === "/rest/v1/rpc/rangebuddy_stop_session") return Response.json({ ...activeSession, is_active: false, ended_at: "2026-10-17T12:00:00Z" });
             if (url.pathname === "/rest/v1/rpc/rangebuddy_create_entry") return Response.json({
                 id: 1, van_id: body.p_van_id, current_kms: body.p_current_kms,
                 litres: body.p_litres, price_per_litre: body.p_price_per_litre, fuel_date: body.p_fuel_date,
                 current_consumption: 8.33,
+                session_id: 3,
             });
             if (url.pathname === "/rest/v1/rpc/rangebuddy_change_license_plate") return Response.json({ ...van, license_plate: body.p_new_license_plate });
             throw new Error(`Unexpected Supabase request path: ${url.pathname}`);
@@ -77,7 +84,45 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         });
         return { status: response.status, body: await response.json(), headers: response.headers };
     };
-    t.beforeEach(() => { calls.length = 0; error = null; results = []; created = true; });
+    t.beforeEach(() => { calls.length = 0; error = null; results = []; created = true; session = activeSession; });
+
+    await t.test("only web admins can start and stop sessions", async () => {
+        for (const [path, body] of [
+            ["/sessions/start", { van_id: 1, start_kms: 100 }],
+            ["/sessions/stop", { van_id: 1, session_id: 3 }],
+        ]) {
+            assert.equal((await request(path, { method: "POST", body, auth: device })).status, 401);
+            assert.equal((await request(path, { method: "POST", body, auth: web(2) })).status, 403);
+            assert.equal((await request(path, { method: "POST", body })).status, 401);
+        }
+        assert.equal(calls.length, 0);
+        const started = await request("/sessions/start", { method: "POST", auth: web(), body: { van_id: 1, start_kms: 100 } });
+        assert.equal(started.status, 201);
+        assert.deepEqual(started.body, activeSession);
+        assert.deepEqual(calls.at(-1).body, { p_van_id: 1, p_start_kms: 100 });
+        const stopped = await request("/sessions/stop", { method: "POST", auth: web(), body: { van_id: 1, session_id: 3 } });
+        assert.equal(stopped.status, 200);
+        assert.equal(stopped.body.is_active, false);
+        assert.deepEqual(calls.at(-1).body, { p_van_id: 1, p_session_id: 3 });
+        assert.equal((await request("/sessions/start", { method: "POST", auth: web(), body: { van_id: 1, start_kms: -1 } })).status, 400);
+        assert.equal((await request("/sessions/stop", { method: "POST", auth: web(), body: { van_id: 1 } })).status, 400);
+    });
+
+    await t.test("devices receive only their current session and no-session is not an authentication error", async () => {
+        const response = await request("/sessions/current", { auth: device });
+        assert.deepEqual(response.body, { session: activeSession });
+        assert.deepEqual(calls.at(-1).body, { p_van_id: 1, p_token_hash: tokenHash });
+        assert.equal((await request("/sessions/current?van_id=2", { auth: device })).status, 400);
+        assert.equal((await request("/sessions/current", { auth: web() })).status, 400);
+        assert.equal((await request("/sessions/current?van_id=1", { auth: web() })).status, 200);
+        assert.deepEqual(calls.at(-1).body, { p_van_id: 1, p_token_hash: null });
+        session = null;
+        assert.deepEqual((await request("/sessions/current", { auth: device })).body, { session: null });
+        error = { code: "PT409", message: "RB_NO_ACTIVE_SESSION" };
+        const blocked = await request("/entries", { method: "POST", auth: web(), body: { ...entry, van_id: 1 } });
+        assert.equal(blocked.status, 409);
+        assert.equal(blocked.body.code, "RB_NO_ACTIVE_SESSION");
+    });
 
     await t.test("activation verifies the password and sends only the token hash to Supabase", async () => {
         const body = { license_plate: " bh01abc ", initial_kms: 100, password: "wrong" };
@@ -111,9 +156,11 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         assert.equal(response.status, 201);
         assert.equal(calls.at(-1).url.pathname, "/rest/v1/rpc/rangebuddy_create_entry");
         assert.equal(response.body.current_consumption, 8.33);
+        assert.equal(response.body.session_id, 3);
         assert.equal(calls.at(-1).body.p_van_id, 1);
         assert.equal(calls.at(-1).body.p_token_hash, tokenHash);
         assert.equal((await request("/entries", { method: "POST", auth: device, body: { ...entry, current_consumption: 1 } })).status, 400);
+        assert.equal((await request("/entries", { method: "POST", auth: device, body: { ...entry, session_id: 99 } })).status, 400);
         assert.equal((await request("/entries", { method: "POST", auth: device, body: { ...entry, van_id: 2 } })).status, 400);
         assert.equal((await request("/entries", { method: "POST", auth: device, body: { ...entry, isAdmin: true } })).status, 400);
     });
@@ -131,12 +178,14 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
     });
 
     await t.test("monthly reads use DST bounds and fetch beyond Supabase response caps", async () => {
-        results = Array.from({ length: 5 }, (_, id) => ({ id, van_id: 1, ...entry, van, current_consumption: id ? 8.33 : null }));
+        results = Array.from({ length: 5 }, (_, id) => ({ id, van_id: 1, ...entry, van, current_consumption: id ? 8.33 : null, session_id: id ? 3 : null }));
         const response = await request("/entries?month=10&year=2026", { auth: device });
         assert.equal(response.status, 200);
         assert.equal(response.body.length, 5);
         assert.equal(response.body[0].current_consumption, null);
         assert.equal(response.body[1].current_consumption, 8.33);
+        assert.equal(response.body[0].session_id, null);
+        assert.equal(response.body[1].session_id, 3);
         const pages = calls.filter(({ url }) => url.pathname.endsWith("/FuelEntries"));
         assert.deepEqual(pages.map(({ url }) => url.searchParams.get("offset")), ["0", "2", "4"]);
         const params = pages[0].url.searchParams;

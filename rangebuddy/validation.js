@@ -21,8 +21,12 @@ export const deviceEntrySchema = z.object(entryFields).strict();
 export const adminEntrySchema = deviceEntrySchema.extend({ van_id: vanId });
 export const devicePlateSchema = z.object({ new_license_plate: licensePlate, password }).strict();
 export const adminPlateSchema = z.object({ new_license_plate: licensePlate, van_id: vanId }).strict();
+export const startSessionSchema = z.object({ van_id: vanId, start_kms: integer }).strict();
+export const stopSessionSchema = z.object({ van_id: vanId, session_id: vanId }).strict();
 
 const queryInteger = (min, max) => z.string().regex(/^\d+$/).transform(Number).pipe(z.number().int().min(min).max(max));
+export const deviceSessionQuerySchema = z.object({}).strict();
+export const adminSessionQuerySchema = z.object({ van_id: queryInteger(1, 2147483647) }).strict();
 export const deviceMonthSchema = z.object({
     month: queryInteger(1, 12).optional(),
     year: queryInteger(2000, 2100).optional(),

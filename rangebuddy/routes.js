@@ -6,6 +6,7 @@ import { createRangeBuddyService } from "./service.js";
 import {
     activationSchema, adminEntrySchema, adminMonthSchema, adminPlateSchema,
     deviceEntrySchema, deviceMonthSchema, devicePlateSchema, licensePlate,
+    startSessionSchema, stopSessionSchema, deviceSessionQuerySchema, adminSessionQuerySchema,
 } from "./validation.js";
 
 export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
@@ -27,6 +28,20 @@ export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
         next();
     });
     router.use(json({ limit: "16kb" }));
+
+    // Only the existing web-admin JWT flow can change sessions, never a device token/password.
+    router.post("/sessions/start", async (req, res) => {
+        if (!(await requireWebAdmin(req, res))) return;
+        res.status(201).json(await service.startSession(startSessionSchema.parse(req.body)));
+    });
+    router.post("/sessions/stop", async (req, res) => {
+        if (!(await requireWebAdmin(req, res))) return;
+        res.json(await service.stopSession(stopSessionSchema.parse(req.body)));
+    });
+    router.get("/sessions/current", authenticate, async (req, res) => {
+        const schema = req.rangeBuddyAuth.type === "admin" ? adminSessionQuerySchema : deviceSessionQuerySchema;
+        res.json({ session: await service.currentSession(req.rangeBuddyAuth, schema.parse(req.query)) });
+    });
 
     router.post("/activate", passwordLimiter, async (req, res) => {
         const input = activationSchema.parse(req.body);

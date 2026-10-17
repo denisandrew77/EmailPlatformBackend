@@ -17,15 +17,19 @@ test("RangeBuddy Supabase RPC functions on PostgreSQL", { skip: !testUrl }, asyn
         const { stdout } = await run("psql", [testUrl, "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-c", statement]);
         return stdout.trim();
     };
-    const rpc = async (statement) => JSON.parse(await sql(`set role service_role; select ${statement}`));
-    const activate = (plate = "BH01ABC", hash = firstHash, kms = 100) => rpc(`public.rangebuddy_activate('${plate}', ${kms}, '${hash}')`);
+    const rpc = async (statement) => JSON.parse(await sql(`set role service_role; select coalesce(${statement}, 'null'::jsonb)`));
+    const activate = async (plate = "BH01ABC", hash = firstHash, kms = 100) => {
+        const result = await rpc(`public.rangebuddy_activate('${plate}', ${kms}, '${hash}')`);
+        if (result.created) await rpc(`public.rangebuddy_start_session(${result.van.id}, ${kms})`);
+        return result;
+    };
     const createEntry = (id = 1, hash = firstHash, kms = 200) => rpc(`public.rangebuddy_create_entry(${id}, '${hash}', ${kms}, 53.72, 7.349, '2026-10-15T16:40:00+03:00')`);
     await sql(`do $$ begin
         if not exists (select from pg_roles where rolname = 'anon') then create role anon nologin; end if;
         if not exists (select from pg_roles where rolname = 'authenticated') then create role authenticated nologin; end if;
         if not exists (select from pg_roles where rolname = 'service_role') then create role service_role nologin bypassrls; end if;
     end $$;
-    drop table if exists "FuelEntries", "Vans" cascade;`);
+    drop table if exists "FuelEntries", "DriverSessions", "Vans" cascade;`);
     await sql(await readFile(new URL("./fixtures/rangebuddy.sql", import.meta.url), "utf8"));
     const migration = await readFile(new URL("../migrations/007_rangebuddy_supabase_functions.sql", import.meta.url), "utf8");
     await sql(migration);
@@ -33,11 +37,106 @@ test("RangeBuddy Supabase RPC functions on PostgreSQL", { skip: !testUrl }, asyn
     const consumptionMigration = await readFile(new URL("../migrations/008_rangebuddy_current_consumption.sql", import.meta.url), "utf8");
     await sql(consumptionMigration);
     await sql(consumptionMigration);
-    t.beforeEach(() => sql('truncate "FuelEntries", "Vans" restart identity'));
+    // Verify existing history is not assigned or recalculated by the sessions migration.
+    await rpc(`public.rangebuddy_activate('OLD', 100, '${firstHash}')`);
+    await createEntry();
+    const sessionsMigration = await readFile(new URL("../migrations/009_rangebuddy_driver_sessions.sql", import.meta.url), "utf8");
+    await sql(sessionsMigration);
+    await sql(sessionsMigration);
+    assert.equal(await sql('select count(*) from "FuelEntries" where session_id is null'), "1");
+    assert.equal(await sql('select count(*) from "DriverSessions"'), "0");
+    const estimateMigration = await readFile(new URL("../migrations/010_rangebuddy_first_refill_estimate.sql", import.meta.url), "utf8");
+    await sql(estimateMigration);
+    await sql(estimateMigration);
+    t.beforeEach(() => sql('truncate "FuelEntries", "DriverSessions", "Vans" restart identity'));
+
+    await t.test("session lifecycle preserves mileage and tokens and requires an active session", async () => {
+        await rpc(`public.rangebuddy_activate('BH01ABC', 100, '${firstHash}')`);
+        assert.equal(await rpc(`public.rangebuddy_current_session(1, '${firstHash}')`), null);
+        await assert.rejects(createEntry(), /RB_NO_ACTIVE_SESSION/);
+        await assert.rejects(rpc("public.rangebuddy_start_session(1, 99)"), /RB_SESSION_START_KMS/);
+        const session = await rpc("public.rangebuddy_start_session(1, 150)");
+        assert.equal(session.average_consumption, null);
+        assert.equal(session.average_fuel_price, null);
+        assert.equal((await rpc(`public.rangebuddy_current_session(1, '${firstHash}')`)).id, session.id);
+        await assert.rejects(rpc(`public.rangebuddy_current_session(1, '${secondHash}')`), /RB_INVALID_TOKEN/);
+        await assert.rejects(rpc("public.rangebuddy_start_session(1, 150)"), /RB_SESSION_ALREADY_ACTIVE/);
+        const first = await createEntry();
+        assert.equal(first.session_id, session.id);
+        assert.equal(first.current_consumption, 107.44);
+        const stopped = await rpc(`public.rangebuddy_stop_session(1, ${session.id})`);
+        assert.equal(stopped.is_active, false);
+        assert(stopped.ended_at);
+        await assert.rejects(createEntry(1, firstHash, 300), /RB_NO_ACTIVE_SESSION/);
+        assert.equal(await rpc(`public.rangebuddy_current_session(1, '${firstHash}')`), null);
+        const next = await rpc("public.rangebuddy_start_session(1, 500)");
+        assert.notEqual(next.id, session.id);
+        await assert.rejects(rpc(`public.rangebuddy_stop_session(1, ${session.id})`), /RB_SESSION_NOT_CURRENT/);
+        assert.equal((await createEntry(1, firstHash, 600)).current_consumption, 53.72);
+        assert.equal(await sql('select initial_kms from "Vans"'), "100");
+        assert.equal(await sql('select token_hash from "Vans"'), firstHash);
+        assert.equal(await sql('select last_kms from "Vans"'), "600");
+    });
+
+    await t.test("session averages use interval litres/distance and simple prices including baseline", async () => {
+        await activate();
+        const entry = (kms, litres, price) => rpc(`public.rangebuddy_create_entry(1, null, ${kms}, ${litres}, ${price}, now())`);
+        const first = await entry(200, 99, 6);
+        assert.equal(first.current_consumption, 99);
+        let session = await rpc("public.rangebuddy_current_session(1, null)");
+        assert.equal(session.average_consumption, 99);
+        assert.equal(session.average_fuel_price, 6);
+        assert.equal((await entry(300, 10, 7)).current_consumption, 10);
+        assert.equal((await rpc("public.rangebuddy_current_session(1, null)")).average_consumption, 10);
+        await entry(800, 100, 9);
+        session = await rpc("public.rangebuddy_current_session(1, null)");
+        assert.equal(session.average_consumption, 18.33);
+        assert.equal(session.average_fuel_price, 7.33);
+        await rpc("public.rangebuddy_stop_session(1, 1)");
+        await rpc("public.rangebuddy_start_session(1, 1000)");
+        await entry(1100, 50, 5);
+        session = await rpc("public.rangebuddy_current_session(1, null)");
+        assert.equal(session.average_consumption, 50);
+        assert.equal(session.average_fuel_price, 5);
+        assert.equal(await sql('select average_consumption from "DriverSessions" where id = 1'), "18.33");
+    });
+
+    await t.test("concurrent starts and stop/refuel races remain consistent", async () => {
+        await rpc(`public.rangebuddy_activate('BH01ABC', 100, '${firstHash}')`);
+        const starts = await Promise.allSettled([
+            rpc("public.rangebuddy_start_session(1, 100)"), rpc("public.rangebuddy_start_session(1, 100)"),
+        ]);
+        assert.equal(starts.filter((r) => r.status === "fulfilled").length, 1);
+        const sessionId = starts.find((r) => r.status === "fulfilled").value.id;
+        const results = await Promise.allSettled([
+            createEntry(), rpc(`public.rangebuddy_stop_session(1, ${sessionId})`),
+        ]);
+        assert.equal(results[1].status, "fulfilled");
+        const count = Number(await sql('select count(*) from "FuelEntries"'));
+        assert.equal(count, results[0].status === "fulfilled" ? 1 : 0);
+        assert.equal(await sql('select is_active from "DriverSessions"'), "f");
+        assert.equal(await sql('select last_kms from "Vans"'), count ? "200" : "100");
+        await assert.rejects(createEntry(1, firstHash, 300), /RB_NO_ACTIVE_SESSION/);
+    });
+
+    await t.test("session aggregate failure rolls back entry and mileage", async () => {
+        await activate();
+        await sql(`create or replace function test_fail_session() returns trigger language plpgsql as $$
+            begin raise exception 'session failure'; end $$;
+            create trigger test_fail_session before update on "DriverSessions"
+            for each row execute function test_fail_session();`);
+        try {
+            await assert.rejects(createEntry(), /session failure/);
+            assert.equal(await sql('select count(*) from "FuelEntries"'), "0");
+            assert.equal(await sql('select last_kms from "Vans"'), "100");
+        } finally {
+            await sql('drop trigger test_fail_session on "DriverSessions"; drop function test_fail_session()');
+        }
+    });
 
     await t.test("consumption uses the previous recorded entry for the same van and is persisted", async () => {
         await activate();
-        assert.equal((await createEntry()).current_consumption, null);
+        assert.equal((await createEntry()).current_consumption, 53.72);
         await activate("BH02ABC", secondHash);
         await createEntry(2, secondHash, 999);
         const entry = await rpc("public.rangebuddy_create_entry(1, null, 800, 50, 7, '2026-09-01T12:00:00Z')");
@@ -141,6 +240,10 @@ test("RangeBuddy Supabase RPC functions on PostgreSQL", { skip: !testUrl }, asyn
             for (const statement of [
                 'select * from public."Vans"',
                 'select * from public."FuelEntries"',
+                'select * from public."DriverSessions"',
+                'select public.rangebuddy_start_session(1, 100)',
+                'select public.rangebuddy_stop_session(1, 1)',
+                'select public.rangebuddy_current_session(1, null)',
                 `select public.rangebuddy_activate('BH01ABC', 100, '${firstHash}')`,
                 "select public.rangebuddy_create_entry(1, null, 200, 10, 2, now())",
                 "select public.rangebuddy_change_license_plate(1, null, 'BH99XYZ')",

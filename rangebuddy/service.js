@@ -1,9 +1,34 @@
 import { RangeBuddyError, checkDatabaseError } from "./errors.js";
 import { monthRange } from "./validation.js";
 import { createDeviceToken, hashDeviceToken } from "./security.js";
-import { entryColumns, serializeEntry, serializeVan, vanColumns } from "./data.js";
+import { entryColumns, serializeEntry, serializeVan, vanColumns, serializeSession } from "./data.js";
 
 export const createRangeBuddyService = (database) => ({
+    async startSession(input) {
+        const { data, error } = await database.rpc("rangebuddy_start_session", {
+            p_van_id: input.van_id, p_start_kms: input.start_kms,
+        });
+        checkDatabaseError(error);
+        return serializeSession(data);
+    },
+
+    async stopSession(input) {
+        const { data, error } = await database.rpc("rangebuddy_stop_session", {
+            p_van_id: input.van_id, p_session_id: input.session_id,
+        });
+        checkDatabaseError(error);
+        return serializeSession(data);
+    },
+
+    async currentSession(auth, query) {
+        const { data, error } = await database.rpc("rangebuddy_current_session", {
+            p_van_id: auth.type === "device" ? auth.vanId : query.van_id,
+            p_token_hash: auth.type === "device" ? auth.tokenHash : null,
+        });
+        checkDatabaseError(error);
+        return serializeSession(data);
+    },
+
     async activate({ license_plate, initial_kms }) {
         const token = createDeviceToken();
         const { data, error } = await database.rpc("rangebuddy_activate", {

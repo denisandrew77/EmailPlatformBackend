@@ -1,14 +1,25 @@
 import { ZodError } from "zod";
 
 export class RangeBuddyError extends Error {
-    constructor(status, message) {
+    constructor(status, message, code) {
         super(message);
         this.status = status;
+        this.code = code;
     }
 }
 
 export const checkDatabaseError = (error) => {
     if (!error) return;
+    const sessionErrors = {
+        RB_NO_ACTIVE_SESSION: [409, "Start a session from the admin portal before adding fuel entries"],
+        RB_SESSION_ALREADY_ACTIVE: [409, "A session is already active for this van"],
+        RB_SESSION_NOT_CURRENT: [409, "This session is no longer the current session"],
+        RB_SESSION_START_KMS: [400, "start_kms must be at least the van's last_kms"],
+    };
+    if (["PT400", "PT409"].includes(error.code) && sessionErrors[error.message]) {
+        const [status, message] = sessionErrors[error.message];
+        throw new RangeBuddyError(status, message, error.message);
+    }
     const messages = {
         PT400: [400, error.message === "RB_ODOMETER_NOT_INCREASING"
             ? "current_kms must be strictly greater than the van's last_kms" : "Invalid RangeBuddy input"],
@@ -35,7 +46,7 @@ export const rangeBuddyErrorHandler = (error, req, res, next) => {
         return res.status(413).json({ error: "Request body is too large" });
     }
     if (error instanceof RangeBuddyError) {
-        return res.status(error.status).json({ error: error.message });
+        return res.status(error.status).json({ error: error.message, ...(error.code ? { code: error.code } : {}) });
     }
     if (error instanceof ZodError) {
         return res.status(400).json({
