@@ -29,6 +29,11 @@ export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
     });
     router.use(json({ limit: "16kb" }));
 
+    router.get("/vans", async (req, res) => {
+        if (!(await requireWebAdmin(req, res))) return;
+        res.json(await service.listVans());
+    });
+
     // Only the existing web-admin JWT flow can change sessions, never a device token/password.
     router.post("/sessions/start", async (req, res) => {
         if (!(await requireWebAdmin(req, res))) return;

@@ -4,6 +4,18 @@ import { createDeviceToken, hashDeviceToken } from "./security.js";
 import { entryColumns, serializeEntry, serializeVan, vanColumns, serializeSession } from "./data.js";
 
 export const createRangeBuddyService = (database) => ({
+    async listVans() {
+        const vans = [];
+        while (true) {
+            const { data, error, count } = await database.from("Vans")
+                .select(vanColumns, { count: "exact" })
+                .order("license_plate", { ascending: true }).order("id", { ascending: true })
+                .range(vans.length, vans.length + 499);
+            checkDatabaseError(error);
+            vans.push(...data.map(serializeVan));
+            if (!data.length || (count !== null && vans.length >= count)) return vans;
+        }
+    },
     async startSession(input) {
         const { data, error } = await database.rpc("rangebuddy_start_session", {
             p_van_id: input.van_id, p_start_kms: input.start_kms,

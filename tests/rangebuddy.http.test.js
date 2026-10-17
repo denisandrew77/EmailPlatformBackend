@@ -42,6 +42,11 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
             if (url.pathname === "/rest/v1/Vans") {
                 const q = url.searchParams;
                 assert(!q.get("select").includes("token_hash"));
+                if (!q.has("token_hash") && !q.has("license_plate") && !q.has("id")) {
+                    const offset = Number(q.get("offset") || 0);
+                    const fleet = [van, { ...van, id: 2, license_plate: "BH02ABC" }, { ...van, id: 3, license_plate: "BH03ABC" }];
+                    return Response.json(fleet.slice(offset, offset + 2), { headers: { "Content-Range": `${offset}-${Math.min(offset + 1, 2)}/3` } });
+                }
                 const matched = (!q.has("token_hash") || q.get("token_hash") === `eq.${tokenHash}`)
                     && (!q.has("license_plate") || q.get("license_plate") === `eq.${van.license_plate}`)
                     && (!q.has("id") || q.get("id") === "eq.1");
@@ -85,6 +90,19 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         return { status: response.status, body: await response.json(), headers: response.headers };
     };
     t.beforeEach(() => { calls.length = 0; error = null; results = []; created = true; session = activeSession; });
+
+    await t.test("fleet listing is admin-only, paged through Supabase and never exposes tokens", async () => {
+        assert.equal((await request("/vans", { auth: device })).status, 401);
+        assert.equal((await request("/vans", { auth: web(2) })).status, 403);
+        assert.equal((await request("/vans")).status, 401);
+        assert.equal(calls.length, 0);
+        const response = await request("/vans", { auth: web() });
+        assert.equal(response.status, 200);
+        assert.equal(response.body.length, 3);
+        assert.equal(response.body[2].license_plate, "BH03ABC");
+        assert(!JSON.stringify(response.body).includes("token_hash"));
+        assert.deepEqual(calls.map(c => c.url.searchParams.get("offset")), ["0", "2"]);
+    });
 
     await t.test("only web admins can start and stop sessions", async () => {
         for (const [path, body] of [
