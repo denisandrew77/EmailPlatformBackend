@@ -53,6 +53,7 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
             if (url.pathname === "/rest/v1/rpc/rangebuddy_create_entry") return Response.json({
                 id: 1, van_id: body.p_van_id, current_kms: body.p_current_kms,
                 litres: body.p_litres, price_per_litre: body.p_price_per_litre, fuel_date: body.p_fuel_date,
+                current_consumption: 8.33,
             });
             if (url.pathname === "/rest/v1/rpc/rangebuddy_change_license_plate") return Response.json({ ...van, license_plate: body.p_new_license_plate });
             throw new Error(`Unexpected Supabase request path: ${url.pathname}`);
@@ -109,8 +110,10 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         const response = await request("/entries", { method: "POST", auth: device, body: entry });
         assert.equal(response.status, 201);
         assert.equal(calls.at(-1).url.pathname, "/rest/v1/rpc/rangebuddy_create_entry");
+        assert.equal(response.body.current_consumption, 8.33);
         assert.equal(calls.at(-1).body.p_van_id, 1);
         assert.equal(calls.at(-1).body.p_token_hash, tokenHash);
+        assert.equal((await request("/entries", { method: "POST", auth: device, body: { ...entry, current_consumption: 1 } })).status, 400);
         assert.equal((await request("/entries", { method: "POST", auth: device, body: { ...entry, van_id: 2 } })).status, 400);
         assert.equal((await request("/entries", { method: "POST", auth: device, body: { ...entry, isAdmin: true } })).status, 400);
     });
@@ -128,16 +131,19 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
     });
 
     await t.test("monthly reads use DST bounds and fetch beyond Supabase response caps", async () => {
-        results = Array.from({ length: 5 }, (_, id) => ({ id, van_id: 1, ...entry, van }));
+        results = Array.from({ length: 5 }, (_, id) => ({ id, van_id: 1, ...entry, van, current_consumption: id ? 8.33 : null }));
         const response = await request("/entries?month=10&year=2026", { auth: device });
         assert.equal(response.status, 200);
         assert.equal(response.body.length, 5);
+        assert.equal(response.body[0].current_consumption, null);
+        assert.equal(response.body[1].current_consumption, 8.33);
         const pages = calls.filter(({ url }) => url.pathname.endsWith("/FuelEntries"));
         assert.deepEqual(pages.map(({ url }) => url.searchParams.get("offset")), ["0", "2", "4"]);
         const params = pages[0].url.searchParams;
         assert.deepEqual(params.getAll("fuel_date"), ["gte.2026-09-30T21:00:00.000Z", "lt.2026-10-31T22:00:00.000Z"]);
         assert.equal(params.get("order"), "fuel_date.desc,id.desc");
         assert.equal(params.get("van_id"), "eq.1");
+        assert(params.get("select").includes("current_consumption"));
         assert(!params.get("select").includes("token_hash"));
         await request("/entries?month=10&year=2026", { auth: web() });
         assert.equal(calls.at(-1).url.searchParams.has("van_id"), false);

@@ -30,7 +30,22 @@ test("RangeBuddy Supabase RPC functions on PostgreSQL", { skip: !testUrl }, asyn
     const migration = await readFile(new URL("../migrations/007_rangebuddy_supabase_functions.sql", import.meta.url), "utf8");
     await sql(migration);
     await sql(migration);
+    const consumptionMigration = await readFile(new URL("../migrations/008_rangebuddy_current_consumption.sql", import.meta.url), "utf8");
+    await sql(consumptionMigration);
+    await sql(consumptionMigration);
     t.beforeEach(() => sql('truncate "FuelEntries", "Vans" restart identity'));
+
+    await t.test("consumption uses the previous recorded entry for the same van and is persisted", async () => {
+        await activate();
+        assert.equal((await createEntry()).current_consumption, null);
+        await activate("BH02ABC", secondHash);
+        await createEntry(2, secondHash, 999);
+        const entry = await rpc("public.rangebuddy_create_entry(1, null, 800, 50, 7, '2026-09-01T12:00:00Z')");
+        assert.equal(entry.current_consumption, 8.33);
+        assert.equal(await sql(`select current_consumption from "FuelEntries" where id = ${entry.id}`), "8.33");
+        // Backdated entries still become the baseline for the next recorded refuelling.
+        assert.equal((await createEntry(1, firstHash, 1000)).current_consumption, 26.86);
+    });
 
     await t.test("activation is normalized, returns safe data and rotation preserves history", async () => {
         const initial = await activate(" bh01abc ");
