@@ -28,11 +28,12 @@ export const stopSessionSchema = z.object({ van_id: vanId, session_id: vanId }).
 const queryInteger = (min, max) => z.string().regex(/^\d+$/).transform(Number).pipe(z.number().int().min(min).max(max));
 export const deviceSessionQuerySchema = z.object({}).strict();
 export const adminSessionQuerySchema = z.object({ van_id: queryInteger(1, 2147483647) }).strict();
-export const deviceMonthSchema = z.object({
+export const deviceEntriesSchema = z.object({}).strict();
+export const adminMonthSchema = z.object({
     month: queryInteger(1, 12).optional(),
     year: queryInteger(2000, 2100).optional(),
+    van_id: queryInteger(1, 2147483647).optional(),
 }).strict();
-export const adminMonthSchema = deviceMonthSchema.extend({ van_id: queryInteger(1, 2147483647).optional() });
 
 export const businessNow = () => DateTime.now().setZone(BUSINESS_TIMEZONE);
 export const monthRange = ({ month, year }, now = businessNow()) => {

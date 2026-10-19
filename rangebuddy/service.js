@@ -91,19 +91,24 @@ export const createRangeBuddyService = (database) => ({
     },
 
     async getEntries(auth, query) {
-        const { start, end } = monthRange(query);
-        const vanId = auth.type === "device" ? auth.vanId : query.van_id;
+        const isDevice = auth.type === "device";
+        const session = isDevice ? await this.currentSession(auth, {}) : null;
+        if (isDevice && !session) return [];
+        const range = isDevice ? null : monthRange(query);
         const entries = [];
-        // Fetch all monthly results even when the Supabase API caps each response.
+        // Fetch all results even when the Supabase API caps each response.
         while (true) {
             let request = database.from("FuelEntries")
                 .select(`${entryColumns},van:Vans!van_id(${vanColumns})`, { count: "exact" })
-                .gte("fuel_date", start.toISOString())
-                .lt("fuel_date", end.toISOString())
                 .order("fuel_date", { ascending: false })
                 .order("id", { ascending: false })
                 .range(entries.length, entries.length + 499);
-            if (vanId) request = request.eq("van_id", vanId);
+            if (isDevice) request = request.eq("van_id", auth.vanId).eq("session_id", session.id);
+            else {
+                request = request.gte("fuel_date", range.start.toISOString())
+                    .lt("fuel_date", range.end.toISOString());
+                if (query.van_id) request = request.eq("van_id", query.van_id);
+            }
             const { data, error, count } = await request;
             checkDatabaseError(error);
             entries.push(...data.map(serializeEntry));

@@ -4,7 +4,7 @@ import { DateTime } from "luxon";
 import { createActivationCode, createDeviceToken, hashActivationCode, hashDeviceToken } from "../rangebuddy/security.js";
 import {
     createVanSchema, redeemCodeSchema, adminPlateSchema, adminEntrySchema, adminMonthSchema, deviceEntrySchema,
-    deviceMonthSchema, licensePlate, monthRange,
+    deviceEntriesSchema, licensePlate, monthRange,
 } from "../rangebuddy/validation.js";
 
 const validEntry = { current_kms: 128450, litres: 53.72, price_per_litre: 7.349, fuel_date: "2026-10-15T16:40:00+03:00" };
@@ -54,7 +54,9 @@ test("fuel validation rejects invalid numbers, precision, timezone-less timestam
 test("devices cannot submit van IDs or admin flags; admin writes require a valid van ID", () => {
     assert.equal(deviceEntrySchema.safeParse({ ...validEntry, van_id: 2 }).success, false);
     assert.equal(deviceEntrySchema.safeParse({ ...validEntry, isAdmin: true }).success, false);
-    assert.equal(deviceMonthSchema.safeParse({ van_id: "2" }).success, false);
+    assert.equal(deviceEntriesSchema.safeParse({ van_id: "2" }).success, false);
+    assert.equal(deviceEntriesSchema.safeParse({ month: "10", year: "2026" }).success, false);
+    assert(deviceEntriesSchema.safeParse({}).success);
     assert.equal(adminEntrySchema.safeParse(validEntry).success, false);
     assert(adminEntrySchema.safeParse({ ...validEntry, van_id: 2 }).success);
     assert.equal(adminEntrySchema.safeParse({ ...validEntry, van_id: -2 }).success, false);

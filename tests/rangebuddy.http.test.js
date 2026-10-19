@@ -220,24 +220,36 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         assert.equal(calls.at(-1).body.p_token_hash, null);
     });
 
-    await t.test("monthly reads use DST bounds and fetch beyond Supabase response caps", async () => {
-        results = Array.from({ length: 5 }, (_, id) => ({ id, van_id: 1, ...entry, van, current_consumption: id ? 8.33 : null, session_id: id ? 3 : null }));
-        const response = await request("/entries?month=10&year=2026", { auth: device });
+    await t.test("device reads return all current-session entries, without month filters", async () => {
+        results = Array.from({ length: 5 }, (_, id) => ({ id, van_id: 1, ...entry, van, current_consumption: 8.33, session_id: 3 }));
+        assert.equal((await request("/entries?month=10&year=2026", { auth: device })).status, 400);
+        const response = await request("/entries", { auth: device });
         assert.equal(response.status, 200);
         assert.equal(response.body.length, 5);
-        assert.equal(response.body[0].current_consumption, null);
-        assert.equal(response.body[1].current_consumption, 8.33);
-        assert.equal(response.body[0].session_id, null);
-        assert.equal(response.body[1].session_id, 3);
+        assert(response.body.every(item => item.session_id === 3));
         const pages = calls.filter(({ url }) => url.pathname.endsWith("/FuelEntries"));
         assert.deepEqual(pages.map(({ url }) => url.searchParams.get("offset")), ["0", "2", "4"]);
         const params = pages[0].url.searchParams;
-        assert.deepEqual(params.getAll("fuel_date"), ["gte.2026-09-30T21:00:00.000Z", "lt.2026-10-31T22:00:00.000Z"]);
+        assert.equal(params.has("fuel_date"), false);
         assert.equal(params.get("order"), "fuel_date.desc,id.desc");
         assert.equal(params.get("van_id"), "eq.1");
+        assert.equal(params.get("session_id"), "eq.3");
         assert(params.get("select").includes("current_consumption"));
         assert(!params.get("select").includes("token_hash"));
+        assert(calls.some(({ url, body }) => url.pathname.endsWith("/rpc/rangebuddy_current_session")
+            && body.p_van_id === 1 && body.p_token_hash === tokenHash));
+        calls.length = 0;
+        session = null;
+        assert.deepEqual((await request("/entries", { auth: device })).body, []);
+        assert.equal(calls.filter(({ url }) => url.pathname.endsWith("/FuelEntries")).length, 0);
+    });
+
+    await t.test("admin monthly reads keep DST bounds and optional van filters", async () => {
+        results = Array.from({ length: 5 }, (_, id) => ({ id, van_id: 1, ...entry, van, current_consumption: 8.33, session_id: 3 }));
         await request("/entries?month=10&year=2026", { auth: web() });
+        const pages = calls.filter(({ url }) => url.pathname.endsWith("/FuelEntries"));
+        assert.deepEqual(pages.map(({ url }) => url.searchParams.get("offset")), ["0", "2", "4"]);
+        assert.deepEqual(pages[0].url.searchParams.getAll("fuel_date"), ["gte.2026-09-30T21:00:00.000Z", "lt.2026-10-31T22:00:00.000Z"]);
         assert.equal(calls.at(-1).url.searchParams.has("van_id"), false);
         await request("/entries?month=10&year=2026&van_id=7", { auth: web() });
         assert.equal(calls.at(-1).url.searchParams.get("van_id"), "eq.7");
