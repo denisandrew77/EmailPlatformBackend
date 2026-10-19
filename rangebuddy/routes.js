@@ -1,11 +1,12 @@
 import { Router, json } from "express";
 import { rateLimit } from "express-rate-limit";
 import { rangeBuddyErrorHandler } from "./errors.js";
-import { createRangeBuddyAuth, verifyAdminPassword } from "./security.js";
+import { createRangeBuddyAuth } from "./security.js";
 import { createRangeBuddyService } from "./service.js";
 import {
-    activationSchema, adminEntrySchema, adminMonthSchema, adminPlateSchema,
-    deviceEntrySchema, deviceMonthSchema, devicePlateSchema, licensePlate,
+    adminEntrySchema, adminMonthSchema, adminPlateSchema,
+    createVanSchema, redeemCodeSchema, vanActionSchema,
+    deviceEntrySchema, deviceMonthSchema, licensePlate,
     startSessionSchema, stopSessionSchema, deviceSessionQuerySchema, adminSessionQuerySchema,
 } from "./validation.js";
 
@@ -15,12 +16,12 @@ export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
     const router = Router();
     const authenticate = createRangeBuddyAuth({ database, requireWebAdmin });
     const service = createRangeBuddyService(database);
-    const passwordLimiter = rateLimit({
+    const redemptionLimiter = rateLimit({
         windowMs: 15 * 60 * 1000,
         limit: 5,
         standardHeaders: "draft-8",
         legacyHeaders: false,
-        message: { error: "Too many password attempts. Try again in 15 minutes." },
+        message: { error: "Too many activation attempts. Try again in 15 minutes." },
     });
 
     router.use((req, res, next) => {
@@ -32,6 +33,18 @@ export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
     router.get("/vans", async (req, res) => {
         if (!(await requireWebAdmin(req, res))) return;
         res.json(await service.listVans());
+    });
+    router.post("/vans", async (req, res) => {
+        if (!(await requireWebAdmin(req, res))) return;
+        res.status(201).json(await service.createVan(createVanSchema.parse(req.body)));
+    });
+    router.post("/vans/code", async (req, res) => {
+        if (!(await requireWebAdmin(req, res))) return;
+        res.status(201).json(await service.issueCode(vanActionSchema.parse(req.body)));
+    });
+    router.post("/vans/revoke-phone", async (req, res) => {
+        if (!(await requireWebAdmin(req, res))) return;
+        res.json(await service.revokePhone(vanActionSchema.parse(req.body)));
     });
 
     // Only the existing web-admin JWT flow can change sessions, never a device token/password.
@@ -48,11 +61,8 @@ export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
         res.json({ session: await service.currentSession(req.rangeBuddyAuth, schema.parse(req.query)) });
     });
 
-    router.post("/activate", passwordLimiter, async (req, res) => {
-        const input = activationSchema.parse(req.body);
-        verifyAdminPassword(input.password);
-        const { created, ...result } = await service.activate(input);
-        res.status(created ? 201 : 200).json(result);
+    router.post("/redeem-code", redemptionLimiter, async (req, res) => {
+        res.status(200).json(await service.redeemCode(redeemCodeSchema.parse(req.body)));
     });
 
     router.post("/entries", authenticate, async (req, res) => {
@@ -70,11 +80,9 @@ export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
         res.json(await service.getVan(req.rangeBuddyAuth, licensePlate.parse(req.params.licensePlate)));
     });
 
-    router.put("/vans/license-plate", passwordLimiter, authenticate, async (req, res) => {
-        const schema = req.rangeBuddyAuth.type === "admin" ? adminPlateSchema : devicePlateSchema;
-        const input = schema.parse(req.body);
-        if (req.rangeBuddyAuth.type === "device") verifyAdminPassword(input.password);
-        res.json(await service.changeLicensePlate(req.rangeBuddyAuth, input));
+    router.put("/vans/license-plate", async (req, res) => {
+        if (!(await requireWebAdmin(req, res))) return;
+        res.json(await service.changeLicensePlate({ type: "admin" }, adminPlateSchema.parse(req.body)));
     });
 
     router.use(rangeBuddyErrorHandler);

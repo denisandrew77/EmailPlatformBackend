@@ -8,6 +8,7 @@ const run = promisify(execFile);
 const testUrl = process.env.RANGEBUDDY_TEST_DATABASE_URL;
 const firstHash = "a".repeat(64);
 const secondHash = "b".repeat(64);
+const codeHash = "c".repeat(64);
 
 test("RangeBuddy Supabase RPC functions on PostgreSQL", { skip: !testUrl }, async (t) => {
     const url = new URL(testUrl);
@@ -19,9 +20,11 @@ test("RangeBuddy Supabase RPC functions on PostgreSQL", { skip: !testUrl }, asyn
     };
     const rpc = async (statement) => JSON.parse(await sql(`set role service_role; select coalesce(${statement}, 'null'::jsonb)`));
     const activate = async (plate = "BH01ABC", hash = firstHash, kms = 100) => {
-        const result = await rpc(`public.rangebuddy_activate('${plate}', ${kms}, '${hash}')`);
-        if (result.created) await rpc(`public.rangebuddy_start_session(${result.van.id}, ${kms})`);
-        return result;
+        const van = await rpc(`public.rangebuddy_create_van('${plate}', ${kms})`);
+        await rpc(`public.rangebuddy_issue_code(${van.id}, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${hash}')`);
+        await rpc(`public.rangebuddy_start_session(${van.id}, ${kms})`);
+        return { created: true, van };
     };
     const createEntry = (id = 1, hash = firstHash, kms = 200) => rpc(`public.rangebuddy_create_entry(${id}, '${hash}', ${kms}, 53.72, 7.349, '2026-10-15T16:40:00+03:00')`);
     await sql(`do $$ begin
@@ -29,7 +32,7 @@ test("RangeBuddy Supabase RPC functions on PostgreSQL", { skip: !testUrl }, asyn
         if not exists (select from pg_roles where rolname = 'authenticated') then create role authenticated nologin; end if;
         if not exists (select from pg_roles where rolname = 'service_role') then create role service_role nologin bypassrls; end if;
     end $$;
-    drop table if exists "FuelEntries", "DriverSessions", "Vans" cascade;`);
+    drop table if exists "RangeBuddyActivationCodes", "FuelEntries", "DriverSessions", "Vans" cascade;`);
     await sql(await readFile(new URL("./fixtures/rangebuddy.sql", import.meta.url), "utf8"));
     const migration = await readFile(new URL("../migrations/007_rangebuddy_supabase_functions.sql", import.meta.url), "utf8");
     await sql(migration);
@@ -48,10 +51,17 @@ test("RangeBuddy Supabase RPC functions on PostgreSQL", { skip: !testUrl }, asyn
     const estimateMigration = await readFile(new URL("../migrations/010_rangebuddy_first_refill_estimate.sql", import.meta.url), "utf8");
     await sql(estimateMigration);
     await sql(estimateMigration);
-    t.beforeEach(() => sql('truncate "FuelEntries", "DriverSessions", "Vans" restart identity'));
+    const activationMigration = await readFile(new URL("../migrations/011_rangebuddy_admin_activation.sql", import.meta.url), "utf8");
+    await sql(activationMigration);
+    assert.equal(await sql('select count(*) from "Vans" where token_hash is not null'), "0");
+    assert.equal(await sql('select count(*) from "FuelEntries" where session_id is null'), "1");
+    await assert.rejects(rpc(`public.rangebuddy_activate('OLD', 100, '${firstHash}')`), /does not exist/);
+    t.beforeEach(() => sql('truncate "RangeBuddyActivationCodes", "FuelEntries", "DriverSessions", "Vans" restart identity'));
 
     await t.test("session lifecycle preserves mileage and tokens and requires an active session", async () => {
-        await rpc(`public.rangebuddy_activate('BH01ABC', 100, '${firstHash}')`);
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
         assert.equal(await rpc(`public.rangebuddy_current_session(1, '${firstHash}')`), null);
         await assert.rejects(createEntry(), /RB_NO_ACTIVE_SESSION/);
         await assert.rejects(rpc("public.rangebuddy_start_session(1, 99)"), /RB_SESSION_START_KMS/);
@@ -102,7 +112,9 @@ test("RangeBuddy Supabase RPC functions on PostgreSQL", { skip: !testUrl }, asyn
     });
 
     await t.test("concurrent starts and stop/refuel races remain consistent", async () => {
-        await rpc(`public.rangebuddy_activate('BH01ABC', 100, '${firstHash}')`);
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
         const starts = await Promise.allSettled([
             rpc("public.rangebuddy_start_session(1, 100)"), rpc("public.rangebuddy_start_session(1, 100)"),
         ]);
@@ -146,30 +158,64 @@ test("RangeBuddy Supabase RPC functions on PostgreSQL", { skip: !testUrl }, asyn
         assert.equal((await createEntry(1, firstHash, 1000)).current_consumption, 26.86);
     });
 
-    await t.test("activation is normalized, returns safe data and rotation preserves history", async () => {
+    await t.test("codes are single use and replacing the phone preserves mileage and sessions", async () => {
         const initial = await activate(" bh01abc ");
-        assert.equal(initial.created, true);
         assert.equal(initial.van.license_plate, "BH01ABC");
         assert(!JSON.stringify(initial).includes("token_hash"));
         assert.equal(initial.van.activation_date, await sql("select (current_timestamp at time zone 'Europe/Bucharest')::date"));
         await createEntry();
-        const rotated = await activate("BH01ABC", secondHash, 99999);
-        assert.equal(rotated.created, false);
-        assert.equal(rotated.van.id, initial.van.id);
-        assert.equal(rotated.van.initial_kms, 100);
-        assert.equal(rotated.van.last_kms, 200);
+        await assert.rejects(rpc(`public.rangebuddy_redeem_code('${codeHash}', '${secondHash}')`), /RB_INVALID_CODE/);
+        const nextCode = "d".repeat(64);
+        await rpc(`public.rangebuddy_issue_code(1, '${nextCode}')`);
+        assert.equal(await sql('select token_hash from "Vans"'), firstHash);
+        const rotated = await rpc(`public.rangebuddy_redeem_code('${nextCode}', '${secondHash}')`);
+        assert.equal(rotated.id, initial.van.id);
+        assert.equal(rotated.initial_kms, 100);
+        assert.equal(rotated.last_kms, 200);
         assert.equal(await sql('select count(*) from "FuelEntries"'), "1");
         assert.equal(await sql('select token_hash from "Vans"'), secondHash);
+        assert.equal(await sql('select count(*) from "DriverSessions" where is_active'), "1");
         await assert.rejects(createEntry(1, firstHash, 300), /RB_INVALID_TOKEN/);
     });
 
-    await t.test("concurrent first activations create one van and rotate its token", async () => {
-        const results = await Promise.all([activate(), activate("BH01ABC", secondHash)]);
-        assert.deepEqual(results.map(({ created }) => created).sort(), [false, true]);
+    await t.test("concurrent redemption accepts only one phone", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        const results = await Promise.allSettled([
+            rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`),
+            rpc(`public.rangebuddy_redeem_code('${codeHash}', '${secondHash}')`),
+        ]);
+        assert.equal(results.filter(({ status }) => status === "fulfilled").length, 1);
+        assert.match(results.find(({ status }) => status === "rejected").reason.message, /RB_INVALID_CODE/);
         assert.equal(await sql('select count(*) from "Vans"'), "1");
-        const activeHash = await sql('select token_hash from "Vans"');
-        await createEntry(1, activeHash);
-        await assert.rejects(createEntry(1, activeHash === firstHash ? secondHash : firstHash, 300), /RB_INVALID_TOKEN/);
+        assert.equal(await sql('select count(*) from "RangeBuddyActivationCodes" where consumed_at is not null'), "1");
+    });
+
+    await t.test("new codes invalidate unused codes, expire after 24 hours and revocation clears access", async () => {
+        await activate();
+        const nextCode = "d".repeat(64);
+        const lastCode = "e".repeat(64);
+        const issued = await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        assert.equal(await sql(`select expires_at - created_at from "RangeBuddyActivationCodes" where code_hash = '${codeHash}' and consumed_at is null`), "1 day");
+        assert(issued.expires_at);
+        await rpc(`public.rangebuddy_issue_code(1, '${nextCode}')`);
+        await assert.rejects(rpc(`public.rangebuddy_redeem_code('${codeHash}', '${secondHash}')`), /RB_INVALID_CODE/);
+        await sql(`update "RangeBuddyActivationCodes" set expires_at = now() - interval '1 second' where code_hash = '${nextCode}'`);
+        await assert.rejects(rpc(`public.rangebuddy_redeem_code('${nextCode}', '${secondHash}')`), /RB_INVALID_CODE/);
+        await rpc(`public.rangebuddy_issue_code(1, '${lastCode}')`);
+        await rpc("public.rangebuddy_revoke_phone(1)");
+        assert.equal(await sql('select token_hash is null from "Vans"'), "t");
+        assert.equal(await sql('select count(*) from "DriverSessions" where is_active'), "1");
+        await assert.rejects(rpc(`public.rangebuddy_redeem_code('${lastCode}', '${secondHash}')`), /RB_INVALID_CODE/);
+        await assert.rejects(createEntry(), /RB_INVALID_TOKEN/);
+    });
+
+    await t.test("same six-digit code cannot be pending for two vans", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc("public.rangebuddy_create_van('BH02ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await assert.rejects(rpc(`public.rangebuddy_issue_code(2, '${codeHash}')`), /duplicate key/);
+        assert.equal(await sql('select count(*) from "RangeBuddyActivationCodes"'), "1");
     });
 
     await t.test("equal/lower kilometres fail and simultaneous equal refuels cannot both commit", async () => {
@@ -224,8 +270,8 @@ test("RangeBuddy Supabase RPC functions on PostgreSQL", { skip: !testUrl }, asyn
     });
 
     await t.test("RPCs validate inputs and allow verified admin calls without device hashes", async () => {
-        await assert.rejects(activate("", firstHash), /RB_INVALID_INPUT/);
-        await assert.rejects(activate("BH01ABC", "plaintext-token"), /RB_INVALID_INPUT/);
+        await assert.rejects(rpc("public.rangebuddy_create_van('', 100)"), /RB_INVALID_INPUT/);
+        await assert.rejects(rpc("public.rangebuddy_create_van('BH01ABC', -1)"), /RB_INVALID_INPUT/);
         await activate();
         const entry = await rpc("public.rangebuddy_create_entry(1, null, 200, 10, 2, '2026-10-15T12:00:00Z')");
         assert.equal(entry.van_id, 1);
@@ -244,7 +290,11 @@ test("RangeBuddy Supabase RPC functions on PostgreSQL", { skip: !testUrl }, asyn
                 'select public.rangebuddy_start_session(1, 100)',
                 'select public.rangebuddy_stop_session(1, 1)',
                 'select public.rangebuddy_current_session(1, null)',
-                `select public.rangebuddy_activate('BH01ABC', 100, '${firstHash}')`,
+                'select * from public."RangeBuddyActivationCodes"',
+                "select public.rangebuddy_create_van('BH01ABC', 100)",
+                `select public.rangebuddy_issue_code(1, '${codeHash}')`,
+                `select public.rangebuddy_redeem_code('${codeHash}', '${secondHash}')`,
+                'select public.rangebuddy_revoke_phone(1)',
                 "select public.rangebuddy_create_entry(1, null, 200, 10, 2, now())",
                 "select public.rangebuddy_change_license_plate(1, null, 'BH99XYZ')",
             ]) await assert.rejects(sql(`set role ${role}; ${statement}`), /permission denied/);

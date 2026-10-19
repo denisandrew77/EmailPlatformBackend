@@ -1,19 +1,11 @@
-import { createHash, randomBytes } from "node:crypto";
-import { verifyPassword } from "../services/passwordService.js";
+import { createHash, randomBytes, randomInt } from "node:crypto";
 import { RangeBuddyError, checkDatabaseError } from "./errors.js";
 import { vanColumns } from "./data.js";
 
 export const createDeviceToken = () => randomBytes(32).toString("hex");
 export const hashDeviceToken = (token) => createHash("sha256").update(token).digest("hex");
-
-export const verifyAdminPassword = (password) => {
-    const storedHash = process.env.RANGEBUDDY_ADMIN_PASSWORD_HASH;
-    // Do not permit the existing web password verifier's legacy plaintext fallback.
-    if (!/^scrypt:[a-f0-9]{32}:[a-f0-9]{128}$/.test(storedHash ?? "")) {
-        throw new RangeBuddyError(503, "RangeBuddy admin password hash is not configured correctly");
-    }
-    if (!verifyPassword(password, storedHash)) throw new RangeBuddyError(401, "Invalid admin password");
-};
+export const createActivationCode = () => randomInt(0, 1000000).toString().padStart(6, "0");
+export const hashActivationCode = (code) => createHash("sha256").update(code).digest("hex");
 
 export const createRangeBuddyAuth = ({ database, requireWebAdmin }) => async (req, res, next) => {
     const authorization = req.get("authorization") || "";

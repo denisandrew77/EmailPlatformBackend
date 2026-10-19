@@ -1,6 +1,6 @@
 import { RangeBuddyError, checkDatabaseError } from "./errors.js";
 import { monthRange } from "./validation.js";
-import { createDeviceToken, hashDeviceToken } from "./security.js";
+import { createActivationCode, createDeviceToken, hashActivationCode, hashDeviceToken } from "./security.js";
 import { entryColumns, serializeEntry, serializeVan, vanColumns, serializeSession } from "./data.js";
 
 export const createRangeBuddyService = (database) => ({
@@ -8,11 +8,11 @@ export const createRangeBuddyService = (database) => ({
         const vans = [];
         while (true) {
             const { data, error, count } = await database.from("Vans")
-                .select(vanColumns, { count: "exact" })
+                .select(`${vanColumns},token_hash`, { count: "exact" })
                 .order("license_plate", { ascending: true }).order("id", { ascending: true })
                 .range(vans.length, vans.length + 499);
             checkDatabaseError(error);
-            vans.push(...data.map(serializeVan));
+            vans.push(...data.map((van) => ({ ...serializeVan(van), phone_active: !!van.token_hash })));
             if (!data.length || (count !== null && vans.length >= count)) return vans;
         }
     },
@@ -41,15 +41,40 @@ export const createRangeBuddyService = (database) => ({
         return serializeSession(data);
     },
 
-    async activate({ license_plate, initial_kms }) {
+    async createVan({ license_plate, initial_kms }) {
+        const { data, error } = await database.rpc("rangebuddy_create_van", {
+            p_license_plate: license_plate, p_initial_kms: initial_kms,
+        });
+        checkDatabaseError(error);
+        return serializeVan(data);
+    },
+
+    async issueCode({ van_id }) {
+        for (let attempt = 0; attempt < 5; attempt++) {
+            const code = createActivationCode();
+            const { data, error } = await database.rpc("rangebuddy_issue_code", {
+                p_van_id: van_id, p_code_hash: hashActivationCode(code),
+            });
+            if (error?.code === "23505" && attempt < 4) continue;
+            checkDatabaseError(error);
+            return { code, expires_at: data.expires_at };
+        }
+    },
+
+    async redeemCode({ code }) {
         const token = createDeviceToken();
-        const { data, error } = await database.rpc("rangebuddy_activate", {
-            p_license_plate: license_plate,
-            p_initial_kms: initial_kms,
+        const { data, error } = await database.rpc("rangebuddy_redeem_code", {
+            p_code_hash: hashActivationCode(code),
             p_token_hash: hashDeviceToken(token),
         });
         checkDatabaseError(error);
-        return { created: data.created, token, van: serializeVan(data.van) };
+        return { token, van: serializeVan(data) };
+    },
+
+    async revokePhone({ van_id }) {
+        const { data, error } = await database.rpc("rangebuddy_revoke_phone", { p_van_id: van_id });
+        checkDatabaseError(error);
+        return data;
     },
 
     async createEntry(auth, input) {

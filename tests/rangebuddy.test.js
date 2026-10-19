@@ -1,18 +1,11 @@
 import assert from "node:assert/strict";
-import test, { afterEach } from "node:test";
+import test from "node:test";
 import { DateTime } from "luxon";
-import { hashPassword } from "../services/passwordService.js";
-import { createDeviceToken, hashDeviceToken, verifyAdminPassword } from "../rangebuddy/security.js";
+import { createActivationCode, createDeviceToken, hashActivationCode, hashDeviceToken } from "../rangebuddy/security.js";
 import {
-    activationSchema, adminEntrySchema, adminMonthSchema, deviceEntrySchema,
-    deviceMonthSchema, devicePlateSchema, licensePlate, monthRange,
+    createVanSchema, redeemCodeSchema, adminPlateSchema, adminEntrySchema, adminMonthSchema, deviceEntrySchema,
+    deviceMonthSchema, licensePlate, monthRange,
 } from "../rangebuddy/validation.js";
-
-const originalHash = process.env.RANGEBUDDY_ADMIN_PASSWORD_HASH;
-afterEach(() => {
-    if (originalHash === undefined) delete process.env.RANGEBUDDY_ADMIN_PASSWORD_HASH;
-    else process.env.RANGEBUDDY_ADMIN_PASSWORD_HASH = originalHash;
-});
 
 const validEntry = { current_kms: 128450, litres: 53.72, price_per_litre: 7.349, fuel_date: "2026-10-15T16:40:00+03:00" };
 
@@ -26,27 +19,26 @@ test("device tokens are independent random 32-byte secrets stored as SHA-256 has
     assert.equal(hashDeviceToken(first), hashDeviceToken(first));
 });
 
-test("admin passwords require the existing secure hash format, never its plaintext fallback", () => {
-    for (const value of [undefined, "plaintext", "scrypt:bad:hash"]) {
-        if (value === undefined) delete process.env.RANGEBUDDY_ADMIN_PASSWORD_HASH;
-        else process.env.RANGEBUDDY_ADMIN_PASSWORD_HASH = value;
-        assert.throws(() => verifyAdminPassword("plaintext"), (error) => error.status === 503);
+test("six-digit codes preserve leading zeros and are hashed before storage", () => {
+    for (let i = 0; i < 50; i++) assert.match(createActivationCode(), /^\d{6}$/);
+    assert.equal(hashActivationCode("042817").length, 64);
+    assert.notEqual(hashActivationCode("042817"), "042817");
+    assert(redeemCodeSchema.safeParse({ code: "042817" }).success);
+    for (const code of ["42817", 42817, "1234567", "123abc", "123 456"]) {
+        assert.equal(redeemCodeSchema.safeParse({ code }).success, false);
     }
-    process.env.RANGEBUDDY_ADMIN_PASSWORD_HASH = hashPassword("test-only-password");
-    assert.doesNotThrow(() => verifyAdminPassword("test-only-password"));
-    assert.throws(() => verifyAdminPassword("wrong"), (error) => error.status === 401);
 });
 
 test("activation and licence plate input is normalized and bounded", () => {
     assert.equal(licensePlate.parse("  bh01abc  "), "BH01ABC");
-    const valid = { license_plate: "BH01ABC", initial_kms: 0, password: "test-password" };
-    assert(activationSchema.safeParse(valid).success);
+    const valid = { license_plate: "BH01ABC", initial_kms: 0 };
+    assert(createVanSchema.safeParse(valid).success);
     for (const initial_kms of [-1, 1.5, "100", null, 2147483648]) {
-        assert.equal(activationSchema.safeParse({ ...valid, initial_kms }).success, false);
+        assert.equal(createVanSchema.safeParse({ ...valid, initial_kms }).success, false);
     }
     for (const plate of ["", "   ", "A".repeat(21), "ABC/123"]) assert.equal(licensePlate.safeParse(plate).success, false);
-    assert.equal(activationSchema.safeParse({ ...valid, password: "" }).success, false);
-    assert.equal(devicePlateSchema.safeParse({ new_license_plate: "BH02ABC" }).success, false);
+    assert.equal(createVanSchema.safeParse({ ...valid, password: "old" }).success, false);
+    assert.equal(adminPlateSchema.safeParse({ new_license_plate: "BH02ABC" }).success, false);
 });
 
 test("fuel validation rejects invalid numbers, precision, timezone-less timestamps and impossible dates", () => {

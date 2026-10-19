@@ -5,14 +5,12 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import { createClient } from "@supabase/supabase-js";
 import { createRangeBuddyRouter } from "../rangebuddy/routes.js";
-import { hashPassword } from "../services/passwordService.js";
-import { hashDeviceToken } from "../rangebuddy/security.js";
+import { hashActivationCode, hashDeviceToken } from "../rangebuddy/security.js";
 
 test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
     process.env.SUPABASE_URL = "https://web-auth.example.test";
     process.env.SUPABASE_SERVICE_ROLE_KEY = "test-key";
     process.env.ACCESS_TOKEN_SECRET = "test-only-jwt-secret";
-    process.env.RANGEBUDDY_ADMIN_PASSWORD_HASH = hashPassword("test-password");
     const { requireAdmin } = await import("../endpoints/dbService.js");
     const { supabase } = await import("../SupabaseClient/supabaseClient.js");
     t.mock.method(supabase, "from", (table) => {
@@ -27,7 +25,6 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
     const calls = [];
     let error = null;
     let results = [];
-    let created = true;
     const activeSession = { id: 3, van_id: 1, start_kms: 100, started_at: "2026-10-17T10:00:00Z",
         ended_at: null, is_active: true, average_consumption: 18.33, average_fuel_price: 7.33 };
     let session = activeSession;
@@ -41,12 +38,14 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
             if (error) return Response.json(error, { status: 400 });
             if (url.pathname === "/rest/v1/Vans") {
                 const q = url.searchParams;
-                assert(!q.get("select").includes("token_hash"));
                 if (!q.has("token_hash") && !q.has("license_plate") && !q.has("id")) {
                     const offset = Number(q.get("offset") || 0);
                     const fleet = [van, { ...van, id: 2, license_plate: "BH02ABC" }, { ...van, id: 3, license_plate: "BH03ABC" }];
+                    assert(q.get("select").includes("token_hash"));
+                    assert.equal(new Headers(init.headers).get("apikey"), "backend-service-key");
                     return Response.json(fleet.slice(offset, offset + 2), { headers: { "Content-Range": `${offset}-${Math.min(offset + 1, 2)}/3` } });
                 }
+                assert(!q.get("select").includes("token_hash"));
                 const matched = (!q.has("token_hash") || q.get("token_hash") === `eq.${tokenHash}`)
                     && (!q.has("license_plate") || q.get("license_plate") === `eq.${van.license_plate}`)
                     && (!q.has("id") || q.get("id") === "eq.1");
@@ -57,7 +56,10 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
                 const page = results.slice(offset, offset + 2);
                 return Response.json(page, { headers: { "Content-Range": `${offset}-${offset + page.length - 1}/${results.length}` } });
             }
-            if (url.pathname === "/rest/v1/rpc/rangebuddy_activate") return Response.json({ created, van });
+            if (url.pathname === "/rest/v1/rpc/rangebuddy_create_van") return Response.json(van);
+            if (url.pathname === "/rest/v1/rpc/rangebuddy_issue_code") return Response.json({ expires_at: "2026-10-20T10:00:00Z" });
+            if (url.pathname === "/rest/v1/rpc/rangebuddy_redeem_code") return Response.json(van);
+            if (url.pathname === "/rest/v1/rpc/rangebuddy_revoke_phone") return Response.json({ revoked: true });
             if (url.pathname === "/rest/v1/rpc/rangebuddy_current_session") return Response.json(session);
             if (url.pathname === "/rest/v1/rpc/rangebuddy_start_session") return Response.json(activeSession);
             if (url.pathname === "/rest/v1/rpc/rangebuddy_stop_session") return Response.json({ ...activeSession, is_active: false, ended_at: "2026-10-17T12:00:00Z" });
@@ -89,7 +91,7 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         });
         return { status: response.status, body: await response.json(), headers: response.headers };
     };
-    t.beforeEach(() => { calls.length = 0; error = null; results = []; created = true; session = activeSession; });
+    t.beforeEach(() => { calls.length = 0; error = null; results = []; session = activeSession; });
 
     await t.test("fleet listing is admin-only, paged through Supabase and never exposes tokens", async () => {
         assert.equal((await request("/vans", { auth: device })).status, 401);
@@ -142,20 +144,43 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         assert.equal(blocked.body.code, "RB_NO_ACTIVE_SESSION");
     });
 
-    await t.test("activation verifies the password and sends only the token hash to Supabase", async () => {
-        const body = { license_plate: " bh01abc ", initial_kms: 100, password: "wrong" };
-        assert.equal((await request("/activate", { method: "POST", body })).status, 401);
+    await t.test("vehicle creation, code issuance and phone revocation require web admin", async () => {
+        for (const [path, body] of [
+            ["/vans", { license_plate: "BH01ABC", initial_kms: 100 }],
+            ["/vans/code", { van_id: 1 }],
+            ["/vans/revoke-phone", { van_id: 1 }],
+        ]) {
+            assert.equal((await request(path, { method: "POST", auth: device, body })).status, 401);
+            assert.equal((await request(path, { method: "POST", auth: web(2), body })).status, 403);
+        }
         assert.equal(calls.length, 0);
-        body.password = "test-password";
-        const response = await request("/activate", { method: "POST", body });
-        assert.equal(response.status, 201);
+        const created = await request("/vans", { method: "POST", auth: web(), body: { license_plate: " bh01abc ", initial_kms: 100 } });
+        assert.equal(created.status, 201);
+        assert.deepEqual(calls.at(-1).body, { p_license_plate: "BH01ABC", p_initial_kms: 100 });
+        assert.equal((await request("/vans", { method: "POST", auth: web(), body: { license_plate: "BH01ABC", initial_kms: 100, password: "old" } })).status, 400);
+        const issued = await request("/vans/code", { method: "POST", auth: web(), body: { van_id: 1 } });
+        assert.equal(issued.status, 201);
+        assert.match(issued.body.code, /^\d{6}$/);
+        assert.deepEqual(calls.at(-1).body, { p_van_id: 1, p_code_hash: hashActivationCode(issued.body.code) });
+        assert(!JSON.stringify(calls).includes(issued.body.code));
+        assert.equal((await request("/vans/revoke-phone", { method: "POST", auth: web(), body: { van_id: 1 } })).status, 200);
+        assert.deepEqual(calls.at(-1).body, { p_van_id: 1 });
+    });
+
+    await t.test("driver redeems only a six-digit code and receives a new token", async () => {
+        assert.equal((await fetch(`${base}/activate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ license_plate: "BH01ABC", password: "old" }) })).status, 404);
+        assert.equal((await request("/redeem-code", { method: "POST", body: { code: "12345" } })).status, 400);
+        const response = await request("/redeem-code", { method: "POST", body: { code: "042817" } });
+        assert.equal(response.status, 200);
         assert.match(response.body.token, /^[a-f0-9]{64}$/);
-        assert.deepEqual(calls[0].body, { p_license_plate: "BH01ABC", p_initial_kms: 100, p_token_hash: hashDeviceToken(response.body.token) });
-        assert(!JSON.stringify(calls).includes("test-password"));
+        assert.deepEqual(calls.at(-1).body, { p_code_hash: hashActivationCode("042817"), p_token_hash: hashDeviceToken(response.body.token) });
+        assert(!JSON.stringify(calls).includes("042817"));
         assert(!JSON.stringify(response.body).includes("token_hash"));
         assert.equal(response.headers.get("cache-control"), "no-store");
-        created = false;
-        assert.equal((await request("/activate", { method: "POST", body })).status, 200);
+        error = { code: "PT401", message: "RB_INVALID_CODE" };
+        const invalid = await request("/redeem-code", { method: "POST", body: { code: "042817" } });
+        assert.equal(invalid.status, 401);
+        assert.equal(invalid.body.code, "RB_INVALID_CODE");
     });
 
     await t.test("device reads hash the token and enforce the van identity", async () => {
@@ -218,12 +243,11 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         assert.equal(calls.at(-1).url.searchParams.get("van_id"), "eq.7");
     });
 
-    await t.test("plate changes require the mobile password and pass the token hash to the RPC", async () => {
+    await t.test("plate changes require web admin and preserve the device token", async () => {
         const body = { new_license_plate: " bh99xyz " };
-        assert.equal((await request("/vans/license-plate", { method: "PUT", auth: device, body })).status, 400);
-        assert.equal((await request("/vans/license-plate", { method: "PUT", auth: device, body: { ...body, password: "wrong" } })).status, 401);
-        assert.equal((await request("/vans/license-plate", { method: "PUT", auth: device, body: { ...body, password: "test-password" } })).status, 200);
-        assert.deepEqual(calls.at(-1).body, { p_van_id: 1, p_token_hash: tokenHash, p_new_license_plate: "BH99XYZ" });
+        assert.equal((await request("/vans/license-plate", { method: "PUT", auth: device, body })).status, 401);
+        assert.equal((await request("/vans/license-plate", { method: "PUT", auth: web(2), body })).status, 403);
+        assert.equal(calls.length, 0);
         assert.equal((await request("/vans/license-plate", { method: "PUT", auth: web(), body: { ...body, van_id: 2 } })).status, 200);
         assert.equal(calls.at(-1).body.p_token_hash, null);
     });
@@ -243,19 +267,21 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         }
     });
 
-    await t.test("password rate limits are shared across activation and plate changes", async () => {
+    await t.test("code redemption attempts are rate limited by IP", async () => {
         const ip = "203.0.113.10";
-        for (let i = 0; i < 5; i++) assert.equal((await request("/activate", {
-            method: "POST", ip, body: { license_plate: "BH01ABC", initial_kms: 0, password: "wrong" },
+        error = { code: "PT401", message: "RB_INVALID_CODE" };
+        for (let i = 0; i < 5; i++) assert.equal((await request("/redeem-code", {
+            method: "POST", ip, body: { code: "123456" },
         })).status, 401);
-        const response = await request("/vans/license-plate", { method: "PUT", ip, auth: device, body: { new_license_plate: "BH99XYZ", password: "test-password" } });
+        const response = await request("/redeem-code", { method: "POST", ip, body: { code: "123456" } });
         assert.equal(response.status, 429);
         assert(response.headers.has("retry-after"));
+        error = null;
         assert.equal((await request("/entries", { ip, auth: device })).status, 200);
     });
 
     await t.test("malformed JSON never echoes credential input", async () => {
-        const response = await fetch(`${base}/activate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: '{"password":"private-test-value",' });
+        const response = await fetch(`${base}/redeem-code`, { method: "POST", headers: { "Content-Type": "application/json" }, body: '{"code":"private-test-value",' });
         assert.equal(response.status, 400);
         assert.deepEqual(await response.json(), { error: "Invalid JSON body" });
     });
