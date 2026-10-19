@@ -58,7 +58,7 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
             }
             if (url.pathname === "/rest/v1/rpc/rangebuddy_create_van") return Response.json(van);
             if (url.pathname === "/rest/v1/rpc/rangebuddy_issue_code") return Response.json({ expires_at: "2026-10-20T10:00:00Z" });
-            if (url.pathname === "/rest/v1/rpc/rangebuddy_redeem_code") return Response.json(van);
+            if (url.pathname === "/rest/v1/rpc/rangebuddy_redeem_code") return Response.json({ van, session: activeSession });
             if (url.pathname === "/rest/v1/rpc/rangebuddy_revoke_phone") return Response.json({ revoked: true });
             if (url.pathname === "/rest/v1/rpc/rangebuddy_current_session") return Response.json(session);
             if (url.pathname === "/rest/v1/rpc/rangebuddy_start_session") return Response.json(activeSession);
@@ -173,6 +173,8 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         const response = await request("/redeem-code", { method: "POST", body: { code: "042817" } });
         assert.equal(response.status, 200);
         assert.match(response.body.token, /^[a-f0-9]{64}$/);
+        assert.equal(response.body.session.id, 3);
+        assert.equal(response.body.van.id, 1);
         assert.deepEqual(calls.at(-1).body, { p_code_hash: hashActivationCode("042817"), p_token_hash: hashDeviceToken(response.body.token) });
         assert(!JSON.stringify(calls).includes("042817"));
         assert(!JSON.stringify(response.body).includes("token_hash"));

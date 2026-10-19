@@ -300,4 +300,64 @@ test("RangeBuddy Supabase RPC functions on PostgreSQL", { skip: !testUrl }, asyn
             ]) await assert.rejects(sql(`set role ${role}; ${statement}`), /permission denied/);
         }
     });
+
+    await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+    await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+    const sessionOnRedemptionMigration = await readFile(new URL("../migrations/012_rangebuddy_code_starts_session.sql", import.meta.url), "utf8");
+    await sql(sessionOnRedemptionMigration);
+    assert.equal(await sql('select count(*) from "RangeBuddyActivationCodes" where invalidated_at is not null'), "0");
+    assert.equal((await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`)).session.start_kms, 100);
+
+    await t.test("first redemption starts the session at initial mileage", async () => {
+        const van = await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(${van.id}, '${codeHash}')`);
+        assert.equal(await sql('select count(*) from "DriverSessions"'), "0");
+        const redeemed = await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+        assert.equal(redeemed.van.initial_kms, 100);
+        assert.equal(redeemed.van.last_kms, 100);
+        assert.equal(redeemed.session.start_kms, 100);
+        assert.equal(redeemed.session.is_active, true);
+        assert.equal(await sql('select current_session_id from "Vans"'), String(redeemed.session.id));
+        assert.equal((await createEntry(1, firstHash, 200)).session_id, redeemed.session.id);
+        await assert.rejects(rpc(`public.rangebuddy_redeem_code('${codeHash}', '${secondHash}')`), /RB_INVALID_CODE/);
+    });
+
+    await t.test("redeeming a replacement phone keeps the active session", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        const first = await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+        await createEntry();
+        const nextCode = "d".repeat(64);
+        await rpc(`public.rangebuddy_issue_code(1, '${nextCode}')`);
+        const replaced = await rpc(`public.rangebuddy_redeem_code('${nextCode}', '${secondHash}')`);
+        assert.equal(replaced.session.id, first.session.id);
+        assert.equal(replaced.van.last_kms, 200);
+        assert.equal(await sql('select count(*) from "DriverSessions"'), "1");
+        await assert.rejects(createEntry(1, firstHash, 300), /RB_INVALID_TOKEN/);
+    });
+
+    await t.test("later phone redemption does not restart a stopped session", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+        await createEntry();
+        await rpc("public.rangebuddy_stop_session(1, 1)");
+        const nextCode = "d".repeat(64);
+        await rpc(`public.rangebuddy_issue_code(1, '${nextCode}')`);
+        const replaced = await rpc(`public.rangebuddy_redeem_code('${nextCode}', '${secondHash}')`);
+        assert.equal(replaced.session, null);
+        assert.equal(replaced.van.last_kms, 200);
+        assert.equal(await sql('select count(*) from "DriverSessions"'), "1");
+        assert.equal(await sql('select current_session_id is null from "Vans"'), "t");
+    });
+
+    await t.test("legacy mileage ahead of initial mileage is not reset", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await sql('update "Vans" set last_kms = 500 where id = 1');
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        const redeemed = await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+        assert.equal(redeemed.session, null);
+        assert.equal(redeemed.van.last_kms, 500);
+        assert.equal(await sql('select count(*) from "DriverSessions"'), "0");
+    });
 });

@@ -68,7 +68,7 @@ export const createRangeBuddyService = (database) => ({
             p_token_hash: hashDeviceToken(token),
         });
         checkDatabaseError(error);
-        return { token, van: serializeVan(data) };
+        return { token, van: serializeVan(data.van), session: serializeSession(data.session) };
     },
 
     async revokePhone({ van_id }) {
