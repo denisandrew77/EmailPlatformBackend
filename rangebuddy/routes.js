@@ -17,11 +17,11 @@ export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
     const authenticate = createRangeBuddyAuth({ database, requireWebAdmin });
     const service = createRangeBuddyService(database);
     const redemptionLimiter = rateLimit({
-        windowMs: 15 * 60 * 1000,
+        windowMs: 60 * 1000,
         limit: 5,
         standardHeaders: "draft-8",
         legacyHeaders: false,
-        message: { error: "Too many activation attempts. Try again in 15 minutes." },
+        message: { error: "Too many activation attempts. Try again in 1 minute." },
     });
 
     router.use((req, res, next) => {

@@ -289,6 +289,7 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         })).status, 401);
         const response = await request("/redeem-code", { method: "POST", ip, body: { code: "123456" } });
         assert.equal(response.status, 429);
+        assert.equal(response.body.error, "Too many activation attempts. Try again in 1 minute.");
         assert(response.headers.has("retry-after"));
         error = null;
         assert.equal((await request("/entries", { ip, auth: device })).status, 200);
