@@ -360,4 +360,47 @@ test("RangeBuddy Supabase RPC functions on PostgreSQL", { skip: !testUrl }, asyn
         assert.equal(redeemed.van.last_kms, 500);
         assert.equal(await sql('select count(*) from "DriverSessions"'), "0");
     });
+
+    const revokeStopsSessionMigration = await readFile(new URL("../migrations/013_rangebuddy_revoke_stops_session.sql", import.meta.url), "utf8");
+    await sql(revokeStopsSessionMigration);
+
+    await t.test("revoking access stops the active session without losing mileage or history", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+        await createEntry();
+        const nextCode = "d".repeat(64);
+        await rpc(`public.rangebuddy_issue_code(1, '${nextCode}')`);
+
+        const revoked = await rpc("public.rangebuddy_revoke_phone(1)");
+        assert.deepEqual(revoked, { revoked: true, session_stopped: true });
+        assert.equal(await sql('select token_hash is null and current_session_id is null from "Vans"'), "t");
+        assert.equal(await sql('select is_active from "DriverSessions"'), "f");
+        assert.equal(await sql('select ended_at is not null from "DriverSessions"'), "t");
+        assert.equal(await sql('select last_kms from "Vans"'), "200");
+        assert.equal(await sql('select count(*) from "FuelEntries"'), "1");
+        await assert.rejects(createEntry(1, firstHash, 300), /RB_INVALID_TOKEN/);
+        await assert.rejects(rpc(`public.rangebuddy_redeem_code('${nextCode}', '${secondHash}')`), /RB_INVALID_CODE/);
+        assert.deepEqual(await rpc("public.rangebuddy_revoke_phone(1)"), { revoked: true, session_stopped: false });
+    });
+
+    await t.test("a stop failure rolls back token and code revocation", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+        const nextCode = "d".repeat(64);
+        await rpc(`public.rangebuddy_issue_code(1, '${nextCode}')`);
+        await sql(`create or replace function test_fail_stop() returns trigger language plpgsql as $$
+            begin raise exception 'stop failure'; end $$;
+            create trigger test_fail_stop before update on "DriverSessions"
+            for each row execute function test_fail_stop();`);
+        try {
+            await assert.rejects(rpc("public.rangebuddy_revoke_phone(1)"), /stop failure/);
+            assert.equal(await sql('select token_hash from "Vans"'), firstHash);
+            assert.equal(await sql('select is_active from "DriverSessions"'), "t");
+            assert.equal(await sql(`select invalidated_at is null from "RangeBuddyActivationCodes" where code_hash = '${nextCode}'`), "t");
+        } finally {
+            await sql('drop trigger test_fail_stop on "DriverSessions"; drop function test_fail_stop()');
+        }
+    });
 });
