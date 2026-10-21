@@ -24,6 +24,14 @@ export const createRangeBuddyService = (database) => ({
         return serializeSession(data);
     },
 
+    async updateSessionStart(input) {
+        const { data, error } = await database.rpc("rangebuddy_update_session_start", {
+            p_van_id: input.van_id, p_session_id: input.session_id, p_start_kms: input.start_kms,
+        });
+        checkDatabaseError(error);
+        return serializeSession(data);
+    },
+
     async stopSession(input) {
         const { data, error } = await database.rpc("rangebuddy_stop_session", {
             p_van_id: input.van_id, p_session_id: input.session_id,

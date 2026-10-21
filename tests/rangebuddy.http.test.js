@@ -63,6 +63,7 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
             if (url.pathname === "/rest/v1/rpc/rangebuddy_delete_entry") return Response.json({ deleted: true, id: body.p_entry_id });
             if (url.pathname === "/rest/v1/rpc/rangebuddy_current_session") return Response.json(session);
             if (url.pathname === "/rest/v1/rpc/rangebuddy_start_session") return Response.json(activeSession);
+            if (url.pathname === "/rest/v1/rpc/rangebuddy_update_session_start") return Response.json({ ...activeSession, start_kms: body.p_start_kms });
             if (url.pathname === "/rest/v1/rpc/rangebuddy_stop_session") return Response.json({ ...activeSession, is_active: false, ended_at: "2026-10-17T12:00:00Z" });
             if (url.pathname === "/rest/v1/rpc/rangebuddy_create_entry") return Response.json({
                 id: 1, van_id: body.p_van_id, current_kms: body.p_current_kms,
@@ -127,6 +128,23 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         assert.deepEqual(calls.at(-1).body, { p_van_id: 1, p_session_id: 3 });
         assert.equal((await request("/sessions/start", { method: "POST", auth: web(), body: { van_id: 1, start_kms: -1 } })).status, 400);
         assert.equal((await request("/sessions/stop", { method: "POST", auth: web(), body: { van_id: 1 } })).status, 400);
+    });
+
+    await t.test("only web admins can edit the current session start", async () => {
+        const body = { van_id: 1, session_id: 3, start_kms: 150 };
+        assert.equal((await request("/sessions/start-kms", { method: "PATCH", body, auth: device })).status, 401);
+        assert.equal((await request("/sessions/start-kms", { method: "PATCH", body, auth: web(2) })).status, 403);
+        assert.equal((await request("/sessions/start-kms", { method: "PATCH", body })).status, 401);
+        assert.equal(calls.length, 0);
+        assert.equal((await request("/sessions/start-kms", { method: "PATCH", body: { ...body, start_kms: -1 }, auth: web() })).status, 400);
+        assert.equal(calls.length, 0);
+        const changed = await request("/sessions/start-kms", { method: "PATCH", body, auth: web() });
+        assert.equal(changed.status, 200);
+        assert.equal(changed.body.start_kms, 150);
+        assert.deepEqual(calls.at(-1).body, { p_van_id: 1, p_session_id: 3, p_start_kms: 150 });
+        error = { code: "PT400", message: "RB_SESSION_START_BEFORE_REFILL" };
+        assert.equal((await request("/sessions/start-kms", { method: "PATCH", body, auth: web() })).body.error,
+            "Starting mileage must be less than the first refill mileage");
     });
 
     await t.test("only web admins can delete a fuel entry", async () => {

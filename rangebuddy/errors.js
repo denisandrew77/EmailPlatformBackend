@@ -15,6 +15,9 @@ export const checkDatabaseError = (error) => {
         RB_SESSION_ALREADY_ACTIVE: [409, "A session is already active for this van"],
         RB_SESSION_NOT_CURRENT: [409, "This session is no longer the current session"],
         RB_SESSION_START_KMS: [400, "start_kms must be at least the van's last_kms"],
+        RB_SESSION_START_TOO_LOW: [400, "Starting mileage cannot be below earlier van mileage"],
+        RB_SESSION_START_BEFORE_REFILL: [400, "Starting mileage must be less than the first refill mileage"],
+        RB_SESSION_MILEAGE_CONFLICT: [409, "Van mileage changed; refresh and try again"],
     };
     if (["PT400", "PT409"].includes(error.code) && sessionErrors[error.message]) {
         const [status, message] = sessionErrors[error.message];

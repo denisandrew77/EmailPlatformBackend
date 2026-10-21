@@ -7,7 +7,8 @@ import {
     adminEntrySchema, adminMonthSchema, adminPlateSchema,
     createVanSchema, redeemCodeSchema, vanActionSchema,
     deviceEntrySchema, deviceEntriesSchema, entryIdSchema, licensePlate,
-    startSessionSchema, stopSessionSchema, deviceSessionQuerySchema, adminSessionQuerySchema,
+    startSessionSchema, stopSessionSchema, updateSessionStartSchema,
+    deviceSessionQuerySchema, adminSessionQuerySchema,
 } from "./validation.js";
 
 export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
@@ -51,6 +52,10 @@ export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
     router.post("/sessions/start", async (req, res) => {
         if (!(await requireWebAdmin(req, res))) return;
         res.status(201).json(await service.startSession(startSessionSchema.parse(req.body)));
+    });
+    router.patch("/sessions/start-kms", async (req, res) => {
+        if (!(await requireWebAdmin(req, res))) return;
+        res.json(await service.updateSessionStart(updateSessionStartSchema.parse(req.body)));
     });
     router.post("/sessions/stop", async (req, res) => {
         if (!(await requireWebAdmin(req, res))) return;

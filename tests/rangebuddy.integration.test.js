@@ -486,4 +486,76 @@ test("RangeBuddy Supabase RPC functions on PostgreSQL", { skip: !testUrl }, asyn
             await assert.rejects(sql(`set role ${role}; select public.rangebuddy_delete_entry(1)`), /permission denied/);
         }
     });
+
+    const editStartMigration = await readFile(new URL("../migrations/015_rangebuddy_edit_session_start.sql", import.meta.url), "utf8");
+    await sql(editStartMigration);
+    await sql(editStartMigration);
+
+    await t.test("editing a session start with no refills updates the van odometer", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+        const changed = await rpc("public.rangebuddy_update_session_start(1, 1, 150)");
+        assert.equal(changed.start_kms, 150);
+        assert.equal(await sql('select last_kms from "Vans"'), "150");
+        assert.equal(await sql('select initial_kms from "Vans"'), "100");
+        await assert.rejects(rpc("public.rangebuddy_update_session_start(1, 1, 99)"), /RB_SESSION_START_TOO_LOW/);
+        await assert.rejects(rpc("public.rangebuddy_update_session_start(1, 999, 160)"), /RB_SESSION_NOT_CURRENT/);
+        assert.equal((await createEntry()).current_consumption, 107.44);
+    });
+
+    await t.test("editing with refills updates first reading and only the single-refill average", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+        const first = await rpc("public.rangebuddy_create_entry(1, null, 200, 50, 6, now())");
+        assert.equal((await rpc("public.rangebuddy_current_session(1, null)")).average_consumption, 50);
+        await rpc("public.rangebuddy_update_session_start(1, 1, 120)");
+        assert.equal(await sql(`select current_consumption from "FuelEntries" where id = ${first.id}`), "62.50");
+        assert.equal((await rpc("public.rangebuddy_current_session(1, null)")).average_consumption, 62.5);
+        assert.equal(await sql('select last_kms from "Vans"'), "200");
+        await assert.rejects(rpc("public.rangebuddy_update_session_start(1, 1, 200)"), /RB_SESSION_START_BEFORE_REFILL/);
+        await assert.rejects(rpc("public.rangebuddy_update_session_start(1, 1, 250)"), /RB_SESSION_START_BEFORE_REFILL/);
+        const second = await rpc("public.rangebuddy_create_entry(1, null, 300, 20, 8, now())");
+        await rpc("public.rangebuddy_update_session_start(1, 1, 130)");
+        assert.equal(await sql(`select current_consumption from "FuelEntries" where id = ${first.id}`), "71.43");
+        assert.equal(await sql(`select current_consumption from "FuelEntries" where id = ${second.id}`), "20.00");
+        const session = await rpc("public.rangebuddy_current_session(1, null)");
+        assert.equal(session.average_consumption, 20);
+        assert.equal(session.average_fuel_price, 7);
+        assert.equal(await sql('select last_kms from "Vans"'), "300");
+    });
+
+    await t.test("earlier session mileage bounds an empty current session", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+        await createEntry();
+        await rpc("public.rangebuddy_stop_session(1, 1)");
+        await rpc("public.rangebuddy_start_session(1, 500)");
+        await assert.rejects(rpc("public.rangebuddy_update_session_start(1, 2, 199)"), /RB_SESSION_START_TOO_LOW/);
+        await rpc("public.rangebuddy_update_session_start(1, 2, 400)");
+        assert.equal(await sql('select last_kms from "Vans"'), "400");
+        assert.equal(await sql('select start_kms from "DriverSessions" where id = 1'), "100");
+    });
+
+    await t.test("failure while recalculating a corrected start rolls back every change", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+        await createEntry();
+        await sql(`create or replace function test_fail_start_edit() returns trigger language plpgsql as $$
+            begin raise exception 'start edit failure'; end $$;
+            create trigger test_fail_start_edit before update of start_kms on "DriverSessions"
+            for each row execute function test_fail_start_edit();`);
+        try {
+            await assert.rejects(rpc("public.rangebuddy_update_session_start(1, 1, 120)"), /start edit failure/);
+            assert.equal(await sql('select start_kms from "DriverSessions"'), "100");
+            assert.equal(await sql('select current_consumption from "FuelEntries"'), "53.72");
+            assert.equal(await sql('select average_consumption from "DriverSessions"'), "53.72");
+            assert.equal(await sql('select last_kms from "Vans"'), "200");
+        } finally {
+            await sql('drop trigger test_fail_start_edit on "DriverSessions"; drop function test_fail_start_edit()');
+        }
+    });
 });
