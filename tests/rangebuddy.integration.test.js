@@ -558,4 +558,57 @@ test("RangeBuddy Supabase RPC functions on PostgreSQL", { skip: !testUrl }, asyn
             await sql('drop trigger test_fail_start_edit on "DriverSessions"; drop function test_fail_start_edit()');
         }
     });
+
+    const correctInitialMigration = await readFile(new URL("../migrations/016_rangebuddy_correct_initial_mileage.sql", import.meta.url), "utf8");
+    await sql(correctInitialMigration);
+    await sql(correctInitialMigration);
+
+    await t.test("first empty session can correct initial mileage below its original value", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 20000)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+        const corrected = await rpc("public.rangebuddy_update_session_start(1, 1, 19000)");
+        assert.equal(corrected.start_kms, 19000);
+        assert.equal(await sql('select initial_kms || \'/\' || last_kms from "Vans"'), "19000/19000");
+        assert.equal(await sql('select token_hash from "Vans"'), firstHash);
+        const refill = await rpc("public.rangebuddy_create_entry(1, null, 19600, 50, 7, now())");
+        assert.equal(refill.current_consumption, 8.33);
+        await rpc("public.rangebuddy_update_session_start(1, 1, 18999)");
+        assert.equal(await sql('select initial_kms from "Vans"'), "19000");
+        assert.equal(await sql('select current_consumption from "FuelEntries"'), "8.32");
+        await assert.rejects(rpc("public.rangebuddy_update_session_start(1, 1, 19600)"), /RB_SESSION_START_BEFORE_REFILL/);
+        await rpc("public.rangebuddy_update_session_start(1, 1, 19050)");
+        assert.equal(await sql('select initial_kms from "Vans"'), "19000");
+        assert.equal(await sql('select current_consumption from "FuelEntries"'), "9.09");
+        assert.equal(await sql('select last_kms from "Vans"'), "19600");
+    });
+
+    await t.test("an empty later session cannot rewrite the original initial mileage", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+        await rpc("public.rangebuddy_stop_session(1, 1)");
+        await rpc("public.rangebuddy_start_session(1, 150)");
+        await assert.rejects(rpc("public.rangebuddy_update_session_start(1, 2, 99)"), /RB_SESSION_START_TOO_LOW/);
+        await rpc("public.rangebuddy_update_session_start(1, 2, 120)");
+        assert.equal(await sql('select initial_kms || \'/\' || last_kms from "Vans"'), "100/120");
+        assert.equal(await sql('select start_kms from "DriverSessions" where id = 1'), "100");
+    });
+
+    await t.test("an initial mileage correction rolls back if the session update fails", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 20000)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+        await sql(`create or replace function test_fail_initial_correction() returns trigger language plpgsql as $$
+            begin raise exception 'initial correction failure'; end $$;
+            create trigger test_fail_initial_correction before update of start_kms on "DriverSessions"
+            for each row execute function test_fail_initial_correction();`);
+        try {
+            await assert.rejects(rpc("public.rangebuddy_update_session_start(1, 1, 19000)"), /initial correction failure/);
+            assert.equal(await sql('select initial_kms || \'/\' || last_kms from "Vans"'), "20000/20000");
+            assert.equal(await sql('select start_kms from "DriverSessions"'), "20000");
+        } finally {
+            await sql('drop trigger test_fail_initial_correction on "DriverSessions"; drop function test_fail_initial_correction()');
+        }
+    });
 });
