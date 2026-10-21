@@ -90,6 +90,12 @@ export const createRangeBuddyService = (database) => ({
         return serializeEntry(data);
     },
 
+    async deleteEntry(entryId) {
+        const { data, error } = await database.rpc("rangebuddy_delete_entry", { p_entry_id: entryId });
+        checkDatabaseError(error);
+        return data;
+    },
+
     async getEntries(auth, query) {
         const isDevice = auth.type === "device";
         const session = isDevice ? await this.currentSession(auth, {}) : null;

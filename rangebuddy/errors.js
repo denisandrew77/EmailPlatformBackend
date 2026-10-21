@@ -23,6 +23,9 @@ export const checkDatabaseError = (error) => {
     if (error.code === "PT401" && error.message === "RB_INVALID_CODE") {
         throw new RangeBuddyError(401, "Invalid or expired activation code", "RB_INVALID_CODE");
     }
+    if (error.code === "PT404" && error.message === "RB_ENTRY_NOT_FOUND") {
+        throw new RangeBuddyError(404, "Fuel entry not found", "RB_ENTRY_NOT_FOUND");
+    }
     const messages = {
         PT400: [400, error.message === "RB_ODOMETER_NOT_INCREASING"
             ? "current_kms must be strictly greater than the van's last_kms" : "Invalid RangeBuddy input"],

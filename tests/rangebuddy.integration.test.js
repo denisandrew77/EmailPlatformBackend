@@ -403,4 +403,87 @@ test("RangeBuddy Supabase RPC functions on PostgreSQL", { skip: !testUrl }, asyn
             await sql('drop trigger test_fail_stop on "DriverSessions"; drop function test_fail_stop()');
         }
     });
+
+    const deleteMigration = await readFile(new URL("../migrations/014_rangebuddy_delete_fuel_entry.sql", import.meta.url), "utf8");
+    await sql(deleteMigration);
+    await sql(deleteMigration);
+
+    await t.test("deleting entries rebuilds consumption, session averages, and latest mileage", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+        const add = (kms, litres, price) => rpc(`public.rangebuddy_create_entry(1, null, ${kms}, ${litres}, ${price}, now())`);
+        const first = await add(200, 50, 6);
+        const middle = await add(300, 20, 7);
+        const last = await add(400, 30, 8);
+        assert.equal((await rpc("public.rangebuddy_current_session(1, null)")).average_consumption, 25);
+        assert.deepEqual(await rpc(`public.rangebuddy_delete_entry(${middle.id})`), { deleted: true, id: middle.id });
+        assert.equal(await sql(`select current_consumption from "FuelEntries" where id = ${last.id}`), "15.00");
+        let session = await rpc("public.rangebuddy_current_session(1, null)");
+        assert.equal(session.average_consumption, 15);
+        assert.equal(session.average_fuel_price, 7);
+        assert.equal(await sql('select last_kms from "Vans"'), "400");
+        await rpc(`public.rangebuddy_delete_entry(${last.id})`);
+        session = await rpc("public.rangebuddy_current_session(1, null)");
+        assert.equal(session.average_consumption, 50);
+        assert.equal(session.average_fuel_price, 6);
+        assert.equal(await sql('select last_kms from "Vans"'), "200");
+        await rpc(`public.rangebuddy_delete_entry(${first.id})`);
+        session = await rpc("public.rangebuddy_current_session(1, null)");
+        assert.equal(session.average_consumption, null);
+        assert.equal(session.average_fuel_price, null);
+        assert.equal(await sql('select last_kms from "Vans"'), "100");
+        assert.equal(await sql('select token_hash from "Vans"'), firstHash);
+        await assert.rejects(rpc(`public.rangebuddy_delete_entry(${first.id})`), /RB_ENTRY_NOT_FOUND/);
+    });
+
+    await t.test("deleting a first or older-session refill preserves later session mileage", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+        const first = await createEntry();
+        const second = await rpc("public.rangebuddy_create_entry(1, null, 300, 20, 7, now())");
+        await rpc("public.rangebuddy_stop_session(1, 1)");
+        await rpc("public.rangebuddy_start_session(1, 500)");
+        await rpc(`public.rangebuddy_delete_entry(${first.id})`);
+        assert.equal(await sql(`select current_consumption from "FuelEntries" where id = ${second.id}`), "10.00");
+        assert.equal(await sql('select average_consumption from "DriverSessions" where id = 1'), "10.00");
+        await rpc(`public.rangebuddy_delete_entry(${second.id})`);
+        assert.equal(await sql('select last_kms from "Vans"'), "500");
+        assert.equal(await sql('select current_session_id from "Vans"'), "2");
+    });
+
+    await t.test("a recalculation failure rolls back the entire deletion", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+        const first = await createEntry();
+        const second = await rpc("public.rangebuddy_create_entry(1, null, 300, 20, 7, now())");
+        await sql(`create or replace function test_fail_recalculation() returns trigger language plpgsql as $$
+            begin raise exception 'recalculation failure'; end $$;
+            create trigger test_fail_recalculation before update on "FuelEntries"
+            for each row execute function test_fail_recalculation();`);
+        try {
+            await assert.rejects(rpc(`public.rangebuddy_delete_entry(${first.id})`), /recalculation failure/);
+            assert.equal(await sql('select count(*) from "FuelEntries"'), "2");
+            assert.equal(await sql(`select current_consumption from "FuelEntries" where id = ${second.id}`), "20.00");
+            assert.equal(await sql('select last_kms from "Vans"'), "300");
+        } finally {
+            await sql('drop trigger test_fail_recalculation on "FuelEntries"; drop function test_fail_recalculation()');
+        }
+    });
+
+    await t.test("legacy entries without a session can be deleted", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await sql(`insert into "FuelEntries" (van_id, current_kms, litres, price_per_litre, fuel_date)
+            values (1, 200, 50, 6, now()), (1, 300, 20, 7, now());
+            update "Vans" set last_kms = 300 where id = 1;`);
+        await rpc("public.rangebuddy_delete_entry(1)");
+        assert.equal(await sql('select current_consumption is null from "FuelEntries" where id = 2'), "t");
+        await rpc("public.rangebuddy_delete_entry(2)");
+        assert.equal(await sql('select last_kms from "Vans"'), "100");
+        for (const role of ["anon", "authenticated"]) {
+            await assert.rejects(sql(`set role ${role}; select public.rangebuddy_delete_entry(1)`), /permission denied/);
+        }
+    });
 });

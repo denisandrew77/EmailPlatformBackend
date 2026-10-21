@@ -60,6 +60,7 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
             if (url.pathname === "/rest/v1/rpc/rangebuddy_issue_code") return Response.json({ expires_at: "2026-10-20T10:00:00Z" });
             if (url.pathname === "/rest/v1/rpc/rangebuddy_redeem_code") return Response.json({ van, session: activeSession });
             if (url.pathname === "/rest/v1/rpc/rangebuddy_revoke_phone") return Response.json({ revoked: true });
+            if (url.pathname === "/rest/v1/rpc/rangebuddy_delete_entry") return Response.json({ deleted: true, id: body.p_entry_id });
             if (url.pathname === "/rest/v1/rpc/rangebuddy_current_session") return Response.json(session);
             if (url.pathname === "/rest/v1/rpc/rangebuddy_start_session") return Response.json(activeSession);
             if (url.pathname === "/rest/v1/rpc/rangebuddy_stop_session") return Response.json({ ...activeSession, is_active: false, ended_at: "2026-10-17T12:00:00Z" });
@@ -126,6 +127,21 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         assert.deepEqual(calls.at(-1).body, { p_van_id: 1, p_session_id: 3 });
         assert.equal((await request("/sessions/start", { method: "POST", auth: web(), body: { van_id: 1, start_kms: -1 } })).status, 400);
         assert.equal((await request("/sessions/stop", { method: "POST", auth: web(), body: { van_id: 1 } })).status, 400);
+    });
+
+    await t.test("only web admins can delete a fuel entry", async () => {
+        assert.equal((await request("/entries/7", { method: "DELETE", auth: device })).status, 401);
+        assert.equal((await request("/entries/7", { method: "DELETE", auth: web(2) })).status, 403);
+        assert.equal((await request("/entries/7", { method: "DELETE" })).status, 401);
+        assert.equal(calls.length, 0);
+        assert.equal((await request("/entries/nope", { method: "DELETE", auth: web() })).status, 400);
+        assert.equal(calls.length, 0);
+        const deleted = await request("/entries/7", { method: "DELETE", auth: web() });
+        assert.equal(deleted.status, 200);
+        assert.deepEqual(deleted.body, { deleted: true, id: 7 });
+        assert.deepEqual(calls.at(-1).body, { p_entry_id: 7 });
+        error = { code: "PT404", message: "RB_ENTRY_NOT_FOUND" };
+        assert.equal((await request("/entries/7", { method: "DELETE", auth: web() })).status, 404);
     });
 
     await t.test("devices receive only their current session and no-session is not an authentication error", async () => {

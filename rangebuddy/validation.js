@@ -21,6 +21,7 @@ const entryFields = {
 };
 export const deviceEntrySchema = z.object(entryFields).strict();
 export const adminEntrySchema = deviceEntrySchema.extend({ van_id: vanId });
+export const entryIdSchema = z.string().regex(/^\d+$/).transform(Number).pipe(vanId);
 export const adminPlateSchema = z.object({ new_license_plate: licensePlate, van_id: vanId }).strict();
 export const startSessionSchema = z.object({ van_id: vanId, start_kms: integer }).strict();
 export const stopSessionSchema = z.object({ van_id: vanId, session_id: vanId }).strict();
