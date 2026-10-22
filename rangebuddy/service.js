@@ -104,6 +104,18 @@ export const createRangeBuddyService = (database) => ({
         return data;
     },
 
+    async updateEntry(entryId, input) {
+        const { data, error } = await database.rpc("rangebuddy_update_entry", {
+            p_entry_id: entryId,
+            p_current_kms: input.current_kms,
+            p_litres: input.litres,
+            p_price_per_litre: input.price_per_litre,
+            p_fuel_date: input.fuel_date,
+        });
+        checkDatabaseError(error);
+        return serializeEntry(data);
+    },
+
     async getEntries(auth, query) {
         const isDevice = auth.type === "device";
         const session = isDevice ? await this.currentSession(auth, {}) : null;

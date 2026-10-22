@@ -611,4 +611,89 @@ test("RangeBuddy Supabase RPC functions on PostgreSQL", { skip: !testUrl }, asyn
             await sql('drop trigger test_fail_initial_correction on "DriverSessions"; drop function test_fail_initial_correction()');
         }
     });
+
+    const editEntryMigration = await readFile(new URL("../migrations/017_rangebuddy_edit_fuel_entry.sql", import.meta.url), "utf8");
+    await sql(editEntryMigration);
+    await sql(editEntryMigration);
+
+    await t.test("editing a middle entry recalculates it and later readings in its session", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+        const add = (kms, litres, price) => rpc(`public.rangebuddy_create_entry(1, null, ${kms}, ${litres}, ${price}, now())`);
+        const first = await add(200, 50, 6);
+        const middle = await add(300, 20, 7);
+        const last = await add(400, 30, 8);
+        const updated = await rpc(`public.rangebuddy_update_entry(${middle.id}, 320, 24, 10, '2026-10-20T12:00:00Z')`);
+        assert.equal(updated.current_consumption, 20);
+        assert.equal(updated.current_kms, 320);
+        assert.equal(updated.litres, 24);
+        assert.equal(updated.price_per_litre, 10);
+        assert.equal(new Date(updated.fuel_date).toISOString(), "2026-10-20T12:00:00.000Z");
+        assert.equal(await sql(`select current_consumption from "FuelEntries" where id = ${first.id}`), "50.00");
+        assert.equal(await sql(`select current_consumption from "FuelEntries" where id = ${last.id}`), "37.50");
+        const session = await rpc("public.rangebuddy_current_session(1, null)");
+        assert.equal(session.average_consumption, 27);
+        assert.equal(session.average_fuel_price, 8);
+        assert.equal(await sql('select last_kms from "Vans"'), "400");
+    });
+
+    await t.test("editing the latest or only entry adjusts the van odometer and single-entry average", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+        const first = await createEntry();
+        const updated = await rpc(`public.rangebuddy_update_entry(${first.id}, 250, 30, 8, now())`);
+        assert.equal(updated.current_consumption, 20);
+        assert.equal(await sql('select last_kms from "Vans"'), "250");
+        assert.equal((await rpc("public.rangebuddy_current_session(1, null)")).average_consumption, 20);
+        await rpc(`public.rangebuddy_update_entry(${first.id}, 220, 30, 8, now())`);
+        assert.equal(await sql('select last_kms from "Vans"'), "220");
+        assert.equal((await createEntry(1, firstHash, 300)).current_consumption, 67.15);
+    });
+
+    await t.test("edited readings stay in their session and invalid order rolls back", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+        const first = await rpc("public.rangebuddy_create_entry(1, null, 200, 50, 6, now())");
+        const second = await rpc("public.rangebuddy_create_entry(1, null, 300, 20, 7, now())");
+        await rpc("public.rangebuddy_stop_session(1, 1)");
+        await rpc("public.rangebuddy_start_session(1, 500)");
+        const later = await rpc("public.rangebuddy_create_entry(1, null, 600, 40, 9, now())");
+        const before = await sql('select average_consumption from "DriverSessions" where id = 1');
+        for (const mileage of [100, 300, 600]) {
+            await assert.rejects(rpc(`public.rangebuddy_update_entry(${first.id}, ${mileage}, 50, 6, now())`), /RB_ENTRY_MILEAGE_ORDER/);
+        }
+        await assert.rejects(rpc(`public.rangebuddy_update_entry(${second.id}, 501, 20, 7, now())`), /RB_ENTRY_MILEAGE_ORDER/);
+        assert.equal(await sql(`select current_kms from "FuelEntries" where id = ${first.id}`), "200");
+        assert.equal(await sql('select average_consumption from "DriverSessions" where id = 1'), before);
+        await rpc(`public.rangebuddy_update_entry(${second.id}, 350, 25, 8, now())`);
+        assert.equal(await sql(`select current_consumption from "FuelEntries" where id = ${later.id}`), "40.00");
+        assert.equal(await sql('select last_kms from "Vans"'), "600");
+        assert.equal(await sql('select average_fuel_price from "DriverSessions" where id = 2'), "9.00");
+    });
+
+    await t.test("session-average failure rolls back the edited row and dependent readings", async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+        const first = await createEntry();
+        const second = await rpc("public.rangebuddy_create_entry(1, null, 300, 20, 7, now())");
+        await sql(`create or replace function test_fail_edit_average() returns trigger language plpgsql as $$
+            begin raise exception 'edit average failure'; end $$;
+            create trigger test_fail_edit_average before update on "DriverSessions"
+            for each row execute function test_fail_edit_average();`);
+        try {
+            await assert.rejects(rpc(`public.rangebuddy_update_entry(${first.id}, 220, 30, 8, now())`), /edit average failure/);
+            assert.equal(await sql(`select current_kms from "FuelEntries" where id = ${first.id}`), "200");
+            assert.equal(await sql(`select current_consumption from "FuelEntries" where id = ${second.id}`), "20.00");
+            assert.equal(await sql('select last_kms from "Vans"'), "300");
+        } finally {
+            await sql('drop trigger test_fail_edit_average on "DriverSessions"; drop function test_fail_edit_average()');
+        }
+        for (const role of ["anon", "authenticated"]) {
+            await assert.rejects(sql(`set role ${role}; select public.rangebuddy_update_entry(1, 250, 20, 7, now())`), /permission denied/);
+        }
+    });
 });

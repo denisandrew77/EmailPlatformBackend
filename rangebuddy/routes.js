@@ -6,7 +6,7 @@ import { createRangeBuddyService } from "./service.js";
 import {
     adminEntrySchema, adminMonthSchema, adminPlateSchema,
     createVanSchema, redeemCodeSchema, vanActionSchema,
-    deviceEntrySchema, deviceEntriesSchema, entryIdSchema, licensePlate,
+    deviceEntrySchema, deviceEntriesSchema, entryIdSchema, updateEntrySchema, licensePlate,
     startSessionSchema, stopSessionSchema, updateSessionStartSchema,
     deviceSessionQuerySchema, adminSessionQuerySchema,
 } from "./validation.js";
@@ -84,6 +84,13 @@ export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
     router.delete("/entries/:entryId", async (req, res) => {
         if (!(await requireWebAdmin(req, res))) return;
         res.json(await service.deleteEntry(entryIdSchema.parse(req.params.entryId)));
+    });
+
+    router.put("/entries/:entryId", async (req, res) => {
+        if (!(await requireWebAdmin(req, res))) return;
+        res.json(await service.updateEntry(
+            entryIdSchema.parse(req.params.entryId), updateEntrySchema.parse(req.body),
+        ));
     });
 
     router.get("/vans/:licensePlate", authenticate, async (req, res) => {

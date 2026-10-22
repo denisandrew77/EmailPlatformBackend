@@ -18,6 +18,7 @@ export const checkDatabaseError = (error) => {
         RB_SESSION_START_TOO_LOW: [400, "Starting mileage cannot be below earlier van mileage"],
         RB_SESSION_START_BEFORE_REFILL: [400, "Starting mileage must be less than the first refill mileage"],
         RB_SESSION_MILEAGE_CONFLICT: [409, "Van mileage changed; refresh and try again"],
+        RB_ENTRY_MILEAGE_ORDER: [400, "Mileage must stay between the previous reading and the next reading or session"],
     };
     if (["PT400", "PT409"].includes(error.code) && sessionErrors[error.message]) {
         const [status, message] = sessionErrors[error.message];

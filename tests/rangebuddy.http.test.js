@@ -61,6 +61,11 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
             if (url.pathname === "/rest/v1/rpc/rangebuddy_redeem_code") return Response.json({ van, session: activeSession });
             if (url.pathname === "/rest/v1/rpc/rangebuddy_revoke_phone") return Response.json({ revoked: true });
             if (url.pathname === "/rest/v1/rpc/rangebuddy_delete_entry") return Response.json({ deleted: true, id: body.p_entry_id });
+            if (url.pathname === "/rest/v1/rpc/rangebuddy_update_entry") return Response.json({
+                id: body.p_entry_id, van_id: 1, session_id: 3, current_kms: body.p_current_kms,
+                litres: body.p_litres, price_per_litre: body.p_price_per_litre,
+                fuel_date: body.p_fuel_date, current_consumption: 8.33,
+            });
             if (url.pathname === "/rest/v1/rpc/rangebuddy_current_session") return Response.json(session);
             if (url.pathname === "/rest/v1/rpc/rangebuddy_start_session") return Response.json(activeSession);
             if (url.pathname === "/rest/v1/rpc/rangebuddy_update_session_start") return Response.json({ ...activeSession, start_kms: body.p_start_kms });
@@ -160,6 +165,31 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         assert.deepEqual(calls.at(-1).body, { p_entry_id: 7 });
         error = { code: "PT404", message: "RB_ENTRY_NOT_FOUND" };
         assert.equal((await request("/entries/7", { method: "DELETE", auth: web() })).status, 404);
+    });
+
+    await t.test("only web admins can edit a fuel entry with validated fields", async () => {
+        assert.equal((await request("/entries/7", { method: "PUT", body: entry, auth: device })).status, 401);
+        assert.equal((await request("/entries/7", { method: "PUT", body: entry, auth: web(2) })).status, 403);
+        assert.equal((await request("/entries/7", { method: "PUT", body: entry })).status, 401);
+        assert.equal(calls.length, 0);
+        assert.equal((await request("/entries/nope", { method: "PUT", body: entry, auth: web() })).status, 400);
+        assert.equal((await request("/entries/7", { method: "PUT", body: { ...entry, session_id: 2 }, auth: web() })).status, 400);
+        assert.equal((await request("/entries/7", { method: "PUT", body: { ...entry, current_kms: -1 }, auth: web() })).status, 400);
+        assert.equal(calls.length, 0);
+        const updated = await request("/entries/7", { method: "PUT", body: entry, auth: web() });
+        assert.equal(updated.status, 200);
+        assert.equal(updated.body.id, 7);
+        assert.equal(updated.body.current_consumption, 8.33);
+        assert.deepEqual(calls.at(-1).body, {
+            p_entry_id: 7, p_current_kms: 200, p_litres: 53.72,
+            p_price_per_litre: 7.349, p_fuel_date: entry.fuel_date,
+        });
+        error = { code: "PT400", message: "RB_ENTRY_MILEAGE_ORDER" };
+        const invalid = await request("/entries/7", { method: "PUT", body: entry, auth: web() });
+        assert.equal(invalid.status, 400);
+        assert.match(invalid.body.error, /mileage/i);
+        error = { code: "PT404", message: "RB_ENTRY_NOT_FOUND" };
+        assert.equal((await request("/entries/7", { method: "PUT", body: entry, auth: web() })).status, 404);
     });
 
     await t.test("devices receive only their current session and no-session is not an authentication error", async () => {
