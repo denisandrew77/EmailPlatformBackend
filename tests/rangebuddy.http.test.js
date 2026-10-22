@@ -52,6 +52,10 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
                 return Response.json(matched ? [van] : []);
             }
             if (url.pathname === "/rest/v1/FuelEntries") {
+                if (url.searchParams.has("id")) {
+                    return Response.json(url.searchParams.get("id") === "eq.7"
+                        ? [{ fuel_date: "2026-10-15T13:40:00+00:00" }] : []);
+                }
                 const offset = Number(url.searchParams.get("offset") || 0);
                 const page = results.slice(offset, offset + 2);
                 return Response.json(page, { headers: { "Content-Range": `${offset}-${offset + page.length - 1}/${results.length}` } });
@@ -168,28 +172,33 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
     });
 
     await t.test("only web admins can edit a fuel entry with validated fields", async () => {
-        assert.equal((await request("/entries/7", { method: "PUT", body: entry, auth: device })).status, 401);
-        assert.equal((await request("/entries/7", { method: "PUT", body: entry, auth: web(2) })).status, 403);
-        assert.equal((await request("/entries/7", { method: "PUT", body: entry })).status, 401);
+        const { fuel_date, ...edit } = entry;
+        assert.equal((await request("/entries/7", { method: "PUT", body: edit, auth: device })).status, 401);
+        assert.equal((await request("/entries/7", { method: "PUT", body: edit, auth: web(2) })).status, 403);
+        assert.equal((await request("/entries/7", { method: "PUT", body: edit })).status, 401);
         assert.equal(calls.length, 0);
-        assert.equal((await request("/entries/nope", { method: "PUT", body: entry, auth: web() })).status, 400);
-        assert.equal((await request("/entries/7", { method: "PUT", body: { ...entry, session_id: 2 }, auth: web() })).status, 400);
-        assert.equal((await request("/entries/7", { method: "PUT", body: { ...entry, current_kms: -1 }, auth: web() })).status, 400);
+        assert.equal((await request("/entries/nope", { method: "PUT", body: edit, auth: web() })).status, 400);
+        assert.equal((await request("/entries/7", { method: "PUT", body: entry, auth: web() })).status, 400);
+        assert.equal((await request("/entries/7", { method: "PUT", body: { ...edit, session_id: 2 }, auth: web() })).status, 400);
+        assert.equal((await request("/entries/7", { method: "PUT", body: { ...edit, current_kms: -1 }, auth: web() })).status, 400);
         assert.equal(calls.length, 0);
-        const updated = await request("/entries/7", { method: "PUT", body: entry, auth: web() });
+        const updated = await request("/entries/7", { method: "PUT", body: edit, auth: web() });
         assert.equal(updated.status, 200);
         assert.equal(updated.body.id, 7);
         assert.equal(updated.body.current_consumption, 8.33);
+        assert.equal(updated.body.fuel_date, "2026-10-15T13:40:00+00:00");
         assert.deepEqual(calls.at(-1).body, {
             p_entry_id: 7, p_current_kms: 200, p_litres: 53.72,
-            p_price_per_litre: 7.349, p_fuel_date: entry.fuel_date,
+            p_price_per_litre: 7.349, p_fuel_date: "2026-10-15T13:40:00+00:00",
         });
         error = { code: "PT400", message: "RB_ENTRY_MILEAGE_ORDER" };
-        const invalid = await request("/entries/7", { method: "PUT", body: entry, auth: web() });
+        const invalid = await request("/entries/7", { method: "PUT", body: edit, auth: web() });
         assert.equal(invalid.status, 400);
         assert.match(invalid.body.error, /mileage/i);
+        error = null;
+        assert.equal((await request("/entries/999", { method: "PUT", body: edit, auth: web() })).status, 404);
         error = { code: "PT404", message: "RB_ENTRY_NOT_FOUND" };
-        assert.equal((await request("/entries/7", { method: "PUT", body: entry, auth: web() })).status, 404);
+        assert.equal((await request("/entries/7", { method: "PUT", body: edit, auth: web() })).status, 404);
     });
 
     await t.test("devices receive only their current session and no-session is not an authentication error", async () => {

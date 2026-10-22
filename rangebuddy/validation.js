@@ -21,7 +21,11 @@ const entryFields = {
 };
 export const deviceEntrySchema = z.object(entryFields).strict();
 export const adminEntrySchema = deviceEntrySchema.extend({ van_id: vanId });
-export const updateEntrySchema = deviceEntrySchema;
+export const updateEntrySchema = z.object({
+    current_kms: entryFields.current_kms,
+    litres: entryFields.litres,
+    price_per_litre: entryFields.price_per_litre,
+}).strict();
 export const entryIdSchema = z.string().regex(/^\d+$/).transform(Number).pipe(vanId);
 export const adminPlateSchema = z.object({ new_license_plate: licensePlate, van_id: vanId }).strict();
 export const startSessionSchema = z.object({ van_id: vanId, start_kms: integer }).strict();
