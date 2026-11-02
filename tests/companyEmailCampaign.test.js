@@ -38,7 +38,14 @@ const invoke = async (t, body, companies = []) => {
         json(body) { this.body = body; return this; },
     };
     await handler({
-        body: { template: "quotationRequest", ...body },
+        body: {
+            template: "quotationRequest",
+            templateData: {
+                loading: { date: "2026-11-02T00:00:00+02:00", time: "10.00" },
+                delivery: { date: "2026-11-03T00:00:00+02:00", time: "08.00" },
+            },
+            ...body,
+        },
         headers: {
             authorization: `Bearer ${jwt.sign({ id: 1 }, process.env.ACCESS_TOKEN_SECRET)}`,
         },
@@ -97,4 +104,40 @@ test("explicit IDs cannot bypass a single selected category", async (t) => {
     const { queries } = await invoke(t, { companyIds: [1], caddyCategory: true });
     assert.equal(queries[0].get("id"), "in.(1)");
     assert.equal(queries[0].get("caddyCategory"), "eq.true");
+});
+
+test("invalid quotation schedule is rejected before querying or queueing", async (t) => {
+    const { response, queries, jobs } = await invoke(t, {
+        threeTonnCategory: true,
+        templateData: {
+            loading: { date: "2026-11-02T00:00:00+02:00", time: "10.00" },
+            delivery: { date: "2026-11-02T00:00:00+02:00", time: "10:00" },
+        },
+    });
+    assert.equal(response.code, 400);
+    assert.match(response.body.error, /after loading/);
+    assert.deepEqual(queries, []);
+    assert.deepEqual(jobs, []);
+});
+
+test("quotation creation rejects an invalid schedule before inserting", async (t) => {
+    const addQuotation = dbRouter.stack.find(
+        (layer) => layer.route?.path === "/addQuotation",
+    ).route.stack.at(-1).handle;
+    t.mock.method(globalThis, "fetch", async () => {
+        throw new Error("Database must not be called for an invalid schedule");
+    });
+    const response = {
+        code: 200,
+        status(code) { this.code = code; return this; },
+        json(body) { this.body = body; return this; },
+    };
+    await addQuotation({
+        body: {
+            senderDate: "2026-11-02T00:00:00+02:00", senderTime: "10.00",
+            receiverDate: "2026-11-02T00:00:00+02:00", receiverTime: "09.00",
+        },
+    }, response);
+    assert.equal(response.code, 400);
+    assert.match(response.body.error, /after loading/);
 });

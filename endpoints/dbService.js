@@ -4,6 +4,7 @@ import { supabase } from "../SupabaseClient/supabaseClient.js";
 import { enqueueEmailJob, enqueueEmailJobs } from "../services/emailQueueService.js";
 import { sendEmail } from "../services/emailSenderService.js";
 import { hashPassword, isPasswordHash, verifyPassword } from "../services/passwordService.js";
+import { quotationScheduleError } from "../services/quotationSchedule.js";
 import {
     buildUncategorizedCompanyEmailJobs,
     normalizeUncategorizedCompanyMessage,
@@ -1013,6 +1014,11 @@ dbRouter.post("/queueCompanyEmailCampaign", async (req, res) => {
         return res.status(400).json({ error: "Select at least one vehicle category" });
     }
 
+    if (template === "quotationRequest") {
+        const error = quotationScheduleError(templateData?.loading, templateData?.delivery);
+        if (error) return res.status(400).json({ error });
+    }
+
     let query = supabase
         .from("Companies")
         .select("id, name, emailAddress, threeTonnCategory, sevenTonnCategory, caddyCategory, unsubscribed")
@@ -1302,6 +1308,12 @@ dbRouter.post("/addQuotation", requireAuthenticatedUser, requireInternalUser, as
         caddyCategory = false,
         observations = "",
     } = req.body;
+
+    const scheduleError = quotationScheduleError(
+        { date: senderDate, time: senderTime },
+        { date: receiverDate, time: receiverTime },
+    );
+    if (scheduleError) return res.status(400).json({ error: scheduleError });
 
     console.log("Add quotation observations present:", Boolean(String(observations).trim()));
 
