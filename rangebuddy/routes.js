@@ -45,6 +45,10 @@ export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
         if (!(await requireWebAdmin(req, res))) return;
         res.status(201).json(await service.createVan(createVanSchema.parse(req.body)));
     });
+    router.delete("/vans/:vanId", async (req, res) => {
+        if (!(await requireWebAdmin(req, res))) return;
+        res.json(await service.deleteVan(entryIdSchema.parse(req.params.vanId)));
+    });
     router.post("/vans/code", async (req, res) => {
         if (!(await requireWebAdmin(req, res))) return;
         res.status(201).json(await service.issueCode(vanActionSchema.parse(req.body)));

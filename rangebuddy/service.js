@@ -61,6 +61,23 @@ export const createRangeBuddyService = (database) => ({
         return serializeVan(data);
     },
 
+    async deleteVan(vanId) {
+        const { data, error } = await database.rpc("rangebuddy_delete_van", { p_van_id: vanId });
+        checkDatabaseError(error);
+        const paths = data.storage_paths || [];
+        let documentsCleanupPending = false;
+        if (paths.length) {
+            try {
+                const { error: removeError } = await database.storage.from("rangebuddy-van-documents").remove(paths);
+                if (removeError) throw removeError;
+            } catch (removeError) {
+                console.error("Unable to remove deleted RangeBuddy van documents", removeError);
+                documentsCleanupPending = true;
+            }
+        }
+        return { deleted: true, van_id: data.van_id, documents_cleanup_pending: documentsCleanupPending };
+    },
+
     async issueCode({ van_id }) {
         for (let attempt = 0; attempt < 5; attempt++) {
             const code = createActivationCode();

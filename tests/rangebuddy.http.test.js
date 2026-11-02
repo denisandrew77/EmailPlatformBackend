@@ -84,6 +84,9 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
                 return Response.json(page, { headers: { "Content-Range": `${offset}-${offset + page.length - 1}/${results.length}` } });
             }
             if (url.pathname === "/rest/v1/rpc/rangebuddy_create_van") return Response.json(van);
+            if (url.pathname === "/rest/v1/rpc/rangebuddy_delete_van") return Response.json({
+                deleted: true, van_id: body.p_van_id, storage_paths: ["1/itp_due_date/document.pdf"],
+            });
             if (url.pathname === "/rest/v1/rpc/rangebuddy_issue_code") return Response.json({ expires_at: "2026-10-20T10:00:00Z" });
             if (url.pathname === "/rest/v1/rpc/rangebuddy_redeem_code") return Response.json({ van, session: activeSession });
             if (url.pathname === "/rest/v1/rpc/rangebuddy_revoke_phone") return Response.json({ revoked: true });
@@ -140,6 +143,23 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         assert(calls[0].url.searchParams.get("select").includes("fire_extinguisher_due_date"));
         assert(!JSON.stringify(response.body).includes("token_hash"));
         assert.deepEqual(calls.map(c => c.url.searchParams.get("offset")), ["0", "2"]);
+    });
+
+    await t.test("only web admins can delete a van and its stored documents", async () => {
+        assert.equal((await request("/vans/1", { method: "DELETE", auth: device })).status, 401);
+        assert.equal((await request("/vans/1", { method: "DELETE", auth: web(2) })).status, 403);
+        assert.equal((await request("/vans/1", { method: "DELETE" })).status, 401);
+        assert.equal((await request("/vans/nope", { method: "DELETE", auth: web() })).status, 400);
+        assert.equal(calls.length, 0);
+        const deleted = await request("/vans/1", { method: "DELETE", auth: web() });
+        assert.equal(deleted.status, 200);
+        assert.deepEqual(deleted.body, { deleted: true, van_id: 1, documents_cleanup_pending: false });
+        assert.deepEqual(calls[0].body, { p_van_id: 1 });
+        assert(calls.some(call => call.url.pathname === "/storage/v1/object/rangebuddy-van-documents"
+            && call.body.includes("1/itp_due_date/document.pdf")));
+        assert(!JSON.stringify(deleted.body).includes("storage_paths"));
+        error = { code: "PT404", message: "RB_VAN_NOT_FOUND" };
+        assert.equal((await request("/vans/1", { method: "DELETE", auth: web() })).status, 404);
     });
 
     await t.test("only web admins can set or clear a validated van due date", async () => {
