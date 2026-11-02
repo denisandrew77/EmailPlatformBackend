@@ -1,18 +1,22 @@
 import { RangeBuddyError, checkDatabaseError } from "./errors.js";
 import { monthRange } from "./validation.js";
 import { createActivationCode, createDeviceToken, hashActivationCode, hashDeviceToken } from "./security.js";
-import { entryColumns, serializeEntry, serializeVan, vanColumns, serializeSession } from "./data.js";
+import { entryColumns, serializeEntry, serializeVan, vanColumns, vanDueDateFields, serializeSession } from "./data.js";
 
 export const createRangeBuddyService = (database) => ({
     async listVans() {
         const vans = [];
         while (true) {
             const { data, error, count } = await database.from("Vans")
-                .select(`${vanColumns},token_hash`, { count: "exact" })
+                .select(`${vanColumns},${vanDueDateFields.join(",")},token_hash`, { count: "exact" })
                 .order("license_plate", { ascending: true }).order("id", { ascending: true })
                 .range(vans.length, vans.length + 499);
             checkDatabaseError(error);
-            vans.push(...data.map((van) => ({ ...serializeVan(van), phone_active: !!van.token_hash })));
+            vans.push(...data.map((van) => ({
+                ...serializeVan(van),
+                ...Object.fromEntries(vanDueDateFields.map((field) => [field, van[field]])),
+                phone_active: !!van.token_hash,
+            })));
             if (!data.length || (count !== null && vans.length >= count)) return vans;
         }
     },
@@ -83,6 +87,15 @@ export const createRangeBuddyService = (database) => ({
         const { data, error } = await database.rpc("rangebuddy_revoke_phone", { p_van_id: van_id });
         checkDatabaseError(error);
         return data;
+    },
+
+    async updateVanDueDate({ van_id, field, due_date }) {
+        const { data, error } = await database.from("Vans")
+            .update({ [field]: due_date }).eq("id", van_id)
+            .select(`id,${field}`).maybeSingle();
+        checkDatabaseError(error);
+        if (!data) throw new RangeBuddyError(404, "Van not found", "RB_VAN_NOT_FOUND");
+        return { van_id: data.id, field, due_date: data[field] };
     },
 
     async createEntry(auth, input) {

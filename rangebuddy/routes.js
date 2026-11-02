@@ -5,7 +5,7 @@ import { createRangeBuddyAuth } from "./security.js";
 import { createRangeBuddyService } from "./service.js";
 import {
     adminEntrySchema, adminMonthSchema, adminPlateSchema,
-    createVanSchema, redeemCodeSchema, vanActionSchema,
+    createVanSchema, redeemCodeSchema, vanActionSchema, updateVanDueDateSchema,
     deviceEntrySchema, deviceEntriesSchema, entryIdSchema, updateEntrySchema, licensePlate,
     startSessionSchema, stopSessionSchema, updateSessionStartSchema,
     deviceSessionQuerySchema, adminSessionQuerySchema,
@@ -46,6 +46,10 @@ export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
     router.post("/vans/revoke-phone", async (req, res) => {
         if (!(await requireWebAdmin(req, res))) return;
         res.json(await service.revokePhone(vanActionSchema.parse(req.body)));
+    });
+    router.patch("/vans/due-date", async (req, res) => {
+        if (!(await requireWebAdmin(req, res))) return;
+        res.json(await service.updateVanDueDate(updateVanDueDateSchema.parse(req.body)));
     });
 
     // Only the existing web-admin JWT flow can change sessions, never a device token/password.

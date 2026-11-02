@@ -1,4 +1,5 @@
 export const vanColumns = "id,license_plate,activation_date,initial_kms,last_kms";
+export const vanDueDateFields = ["itp_due_date", "cmr_insurance_due_date", "casco_insurance_due_date", "license_due_date", "fire_extinguisher_due_date"];
 export const entryColumns = "id,van_id,current_kms,litres,price_per_litre,fuel_date,current_consumption,session_id";
 export const sessionColumns = "id,van_id,start_kms,started_at,ended_at,is_active,average_consumption,average_fuel_price";
 export const serializeSession = (session) => session

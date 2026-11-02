@@ -21,7 +21,9 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
     });
     const token = "a".repeat(64);
     const tokenHash = hashDeviceToken(token);
-    const van = { id: 1, license_plate: "BH01ABC", activation_date: "2026-10-15", initial_kms: 100, last_kms: 100 };
+    const van = { id: 1, license_plate: "BH01ABC", activation_date: "2026-10-15", initial_kms: 100, last_kms: 100,
+        itp_due_date: null, cmr_insurance_due_date: null, casco_insurance_due_date: null,
+        license_due_date: null, fire_extinguisher_due_date: null };
     const calls = [];
     let error = null;
     let results = [];
@@ -38,6 +40,10 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
             if (error) return Response.json(error, { status: 400 });
             if (url.pathname === "/rest/v1/Vans") {
                 const q = url.searchParams;
+                if (init.method === "PATCH") {
+                    assert.equal(q.get("id"), "eq.1");
+                    return Response.json([{ id: 1, ...body }]);
+                }
                 if (!q.has("token_hash") && !q.has("license_plate") && !q.has("id")) {
                     const offset = Number(q.get("offset") || 0);
                     const fleet = [van, { ...van, id: 2, license_plate: "BH02ABC" }, { ...van, id: 3, license_plate: "BH03ABC" }];
@@ -113,8 +119,35 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         assert.equal(response.status, 200);
         assert.equal(response.body.length, 3);
         assert.equal(response.body[2].license_plate, "BH03ABC");
+        assert.equal(response.body[0].itp_due_date, null);
+        assert(calls[0].url.searchParams.get("select").includes("fire_extinguisher_due_date"));
         assert(!JSON.stringify(response.body).includes("token_hash"));
         assert.deepEqual(calls.map(c => c.url.searchParams.get("offset")), ["0", "2"]);
+    });
+
+    await t.test("only web admins can set or clear a validated van due date", async () => {
+        const body = { van_id: 1, field: "itp_due_date", due_date: "2027-03-12" };
+        assert.equal((await request("/vans/due-date", { method: "PATCH", body, auth: device })).status, 401);
+        assert.equal((await request("/vans/due-date", { method: "PATCH", body, auth: web(2) })).status, 403);
+        assert.equal((await request("/vans/due-date", { method: "PATCH", body })).status, 401);
+        assert.equal(calls.length, 0);
+        for (const invalid of [
+            { ...body, field: "token_hash" },
+            { ...body, due_date: "2027-02-30" },
+            { ...body, due_date: "12.03.2027" },
+            { ...body, due_date: undefined },
+            { ...body, extra: true },
+        ]) {
+            assert.equal((await request("/vans/due-date", { method: "PATCH", body: invalid, auth: web() })).status, 400);
+        }
+        assert.equal(calls.length, 0);
+        const updated = await request("/vans/due-date", { method: "PATCH", body, auth: web() });
+        assert.equal(updated.status, 200);
+        assert.deepEqual(updated.body, { van_id: 1, field: "itp_due_date", due_date: "2027-03-12" });
+        assert.deepEqual(calls.at(-1).body, { itp_due_date: "2027-03-12" });
+        const cleared = await request("/vans/due-date", { method: "PATCH", body: { ...body, due_date: null }, auth: web() });
+        assert.equal(cleared.status, 200);
+        assert.equal(cleared.body.due_date, null);
     });
 
     await t.test("only web admins can start and stop sessions", async () => {

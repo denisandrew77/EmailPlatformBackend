@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { DateTime } from "luxon";
+import { vanDueDateFields } from "./data.js";
 
 export const BUSINESS_TIMEZONE = "Europe/Bucharest";
 const integer = z.number().int().min(0).max(2147483647);
@@ -13,6 +14,11 @@ const fuelDate = z.iso.datetime({ offset: true })
 export const createVanSchema = z.object({ license_plate: licensePlate, initial_kms: integer }).strict();
 export const redeemCodeSchema = z.object({ code: activationCode }).strict();
 export const vanActionSchema = z.object({ van_id: vanId }).strict();
+export const updateVanDueDateSchema = z.object({
+    van_id: vanId,
+    field: z.enum(vanDueDateFields),
+    due_date: z.iso.date().nullable(),
+}).strict();
 const entryFields = {
     current_kms: integer,
     litres: z.number().positive().max(9999999.999).multipleOf(0.001),
