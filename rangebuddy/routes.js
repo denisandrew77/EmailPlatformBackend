@@ -1,8 +1,9 @@
-import { Router, json } from "express";
+import { Router, json, raw } from "express";
 import { rateLimit } from "express-rate-limit";
 import { rangeBuddyErrorHandler } from "./errors.js";
 import { createRangeBuddyAuth } from "./security.js";
 import { createRangeBuddyService } from "./service.js";
+import { createRangeBuddyDocumentService } from "./documents.js";
 import {
     adminEntrySchema, adminMonthSchema, adminPlateSchema,
     createVanSchema, redeemCodeSchema, vanActionSchema, updateVanDueDateSchema,
@@ -10,6 +11,10 @@ import {
     startSessionSchema, stopSessionSchema, updateSessionStartSchema,
     deviceSessionQuerySchema, adminSessionQuerySchema,
 } from "./validation.js";
+import { vanDueDateFields } from "./data.js";
+import { z } from "zod";
+
+const documentTypeSchema = z.enum(vanDueDateFields);
 
 export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
     if (typeof requireWebAdmin !== "function") throw new Error("RangeBuddy requires the existing web admin authorizer");
@@ -17,6 +22,7 @@ export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
     const router = Router();
     const authenticate = createRangeBuddyAuth({ database, requireWebAdmin });
     const service = createRangeBuddyService(database);
+    const documents = createRangeBuddyDocumentService(database);
     const redemptionLimiter = rateLimit({
         windowMs: 60 * 1000,
         limit: 5,
@@ -50,6 +56,25 @@ export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
     router.patch("/vans/due-date", async (req, res) => {
         if (!(await requireWebAdmin(req, res))) return;
         res.json(await service.updateVanDueDate(updateVanDueDateSchema.parse(req.body)));
+    });
+    router.get("/vans/:vanId/documents", async (req, res) => {
+        if (!(await requireWebAdmin(req, res))) return;
+        res.json(await documents.list(entryIdSchema.parse(req.params.vanId)));
+    });
+    router.get("/vans/:vanId/documents/:type/url", async (req, res) => {
+        if (!(await requireWebAdmin(req, res))) return;
+        res.json(await documents.signedUrl(
+            entryIdSchema.parse(req.params.vanId), documentTypeSchema.parse(req.params.type),
+        ));
+    });
+    router.post("/vans/:vanId/documents/:type", async (req, res, next) => {
+        if (!(await requireWebAdmin(req, res))) return;
+        raw({ type: () => true, limit: "5mb" })(req, res, next);
+    }, async (req, res) => {
+        res.status(201).json(await documents.upload(
+            entryIdSchema.parse(req.params.vanId), documentTypeSchema.parse(req.params.type),
+            req.body, req.headers["content-type"], req.headers["x-file-name"],
+        ));
     });
 
     // Only the existing web-admin JWT flow can change sessions, never a device token/password.

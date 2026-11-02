@@ -27,6 +27,7 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
     const calls = [];
     let error = null;
     let results = [];
+    let storedDocument = null;
     const activeSession = { id: 3, van_id: 1, start_kms: 100, started_at: "2026-10-17T10:00:00Z",
         ended_at: null, is_active: true, average_consumption: 18.33, average_fuel_price: 7.33 };
     let session = activeSession;
@@ -35,7 +36,8 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         global: { fetch: async (input, init) => {
             const url = new URL(input);
             assert.equal(url.hostname, "rangebuddy.example.test");
-            const body = init.body ? JSON.parse(init.body) : undefined;
+            const isStorage = url.pathname.startsWith("/storage/v1/");
+            const body = init.body ? (isStorage ? init.body : JSON.parse(init.body)) : undefined;
             calls.push({ url, body, headers: new Headers(init.headers) });
             if (error) return Response.json(error, { status: 400 });
             if (url.pathname === "/rest/v1/Vans") {
@@ -56,6 +58,21 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
                     && (!q.has("license_plate") || q.get("license_plate") === `eq.${van.license_plate}`)
                     && (!q.has("id") || q.get("id") === "eq.1");
                 return Response.json(matched ? [van] : []);
+            }
+            if (url.pathname === "/rest/v1/RangeBuddyVanDocuments") {
+                if (init.method === "POST") {
+                    storedDocument = Array.isArray(body) ? body[0] : body;
+                }
+                const fields = url.searchParams.get("select").split(",");
+                const projected = storedDocument && Object.fromEntries(fields.map(field => [field, storedDocument[field]]));
+                return Response.json(init.method === "POST" ? projected : projected ? [projected] : []);
+            }
+            if (url.pathname.startsWith("/storage/v1/object/sign/rangebuddy-van-documents/")) {
+                return Response.json({ signedURL: "/object/sign/rangebuddy-van-documents/test?token=signed" });
+            }
+            if (url.pathname.startsWith("/storage/v1/object/rangebuddy-van-documents")) {
+                if (init.method === "DELETE") return Response.json([]);
+                return Response.json({ Key: url.pathname });
             }
             if (url.pathname === "/rest/v1/FuelEntries") {
                 if (url.searchParams.has("id")) {
@@ -108,7 +125,7 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         });
         return { status: response.status, body: await response.json(), headers: response.headers };
     };
-    t.beforeEach(() => { calls.length = 0; error = null; results = []; session = activeSession; });
+    t.beforeEach(() => { calls.length = 0; error = null; results = []; session = activeSession; storedDocument = null; });
 
     await t.test("fleet listing is admin-only, paged through Supabase and never exposes tokens", async () => {
         assert.equal((await request("/vans", { auth: device })).status, 401);
@@ -148,6 +165,47 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         const cleared = await request("/vans/due-date", { method: "PATCH", body: { ...body, due_date: null }, auth: web() });
         assert.equal(cleared.status, 200);
         assert.equal(cleared.body.due_date, null);
+    });
+
+    await t.test("van documents are private, validated and accessible only to web admins", async () => {
+        const path = "/vans/1/documents/itp_due_date";
+        const pdf = new Uint8Array(Buffer.from("%PDF-1.7\nexample"));
+        const upload = async (suffix, auth, file = pdf, type = "application/pdf") => {
+            const response = await fetch(`${base}${path}${suffix}`, {
+                method: "POST", headers: { "Content-Type": type, "X-File-Name": encodeURIComponent("inspection.pdf"),
+                    ...(auth ? { Authorization: auth } : {}) }, body: file,
+            });
+            return { status: response.status, body: await response.json() };
+        };
+        assert.equal((await request("/vans/1/documents", { auth: device })).status, 401);
+        assert.equal((await request("/vans/1/documents", { auth: web(2) })).status, 403);
+        assert.equal((await upload("", device)).status, 401);
+        assert.equal((await upload("", web(2))).status, 403);
+        assert.equal(calls.length, 0);
+        assert.equal((await upload("", web(), new Uint8Array(Buffer.from("<html>bad</html>")), "application/pdf")).status, 415);
+        assert.equal((await upload("", web(), pdf, "image/png")).status, 415);
+        assert.equal((await fetch(`${base}/vans/1/documents/bad_field`, {
+            method: "POST", headers: { "Content-Type": "application/pdf", Authorization: web() }, body: pdf,
+        })).status, 400);
+        assert.equal((await request("/vans/1/documents/bad_field/url", { auth: web() })).status, 400);
+        assert.equal(calls.length, 0);
+        const uploaded = await upload("", web());
+        assert.equal(uploaded.status, 201);
+        assert.equal(uploaded.body.original_name, "inspection.pdf");
+        assert.equal(uploaded.body.document_type, "itp_due_date");
+        assert(!JSON.stringify(uploaded.body).includes("storage_path"));
+        const listing = await request("/vans/1/documents", { auth: web() });
+        assert.equal(listing.body[0].original_name, "inspection.pdf");
+        assert(!JSON.stringify(listing.body).includes("storage_path"));
+        const link = await request("/vans/1/documents/itp_due_date/url", { auth: web() });
+        assert.equal(link.status, 200);
+        assert.match(link.body.url, /token=signed/);
+        assert.equal((await request("/vans/1/documents/itp_due_date/url", { auth: web(2) })).status, 403);
+        const oldPath = storedDocument.storage_path;
+        assert.equal((await upload("", web())).status, 201);
+        assert.notEqual(storedDocument.storage_path, oldPath);
+        assert(calls.some(call => call.url.pathname === "/storage/v1/object/rangebuddy-van-documents"
+            && call.body.includes(oldPath)));
     });
 
     await t.test("only web admins can start and stop sessions", async () => {
