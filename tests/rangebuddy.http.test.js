@@ -29,6 +29,9 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
     let results = [];
     let storedDocument = null;
     const storedSharedDocuments = new Map();
+    const storageFiles = new Map();
+    let sharedUploadBehavior = "ok";
+    let storageDeleteBehavior = "ok";
     const activeSession = { id: 3, van_id: 1, start_kms: 100, started_at: "2026-10-17T10:00:00Z",
         ended_at: null, is_active: true, average_consumption: 18.33, average_fuel_price: 7.33 };
     let session = activeSession;
@@ -81,8 +84,31 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
             if (url.pathname.startsWith("/storage/v1/object/sign/rangebuddy-van-documents/")) {
                 return Response.json({ signedURL: "/object/sign/rangebuddy-van-documents/test?token=signed" });
             }
+            if (url.pathname.startsWith("/storage/v1/object/info/rangebuddy-van-documents/")) {
+                const path = url.pathname.replace("/storage/v1/object/info/rangebuddy-van-documents/", "");
+                const file = storageFiles.get(path);
+                return file ? Response.json({ size: file.length })
+                    : Response.json({ code: "NoSuchKey", message: "Not found" }, { status: 404 });
+            }
+            if (url.pathname === "/storage/v1/object/list/rangebuddy-van-documents") {
+                const { prefix, limit, offset } = JSON.parse(body);
+                return Response.json([...storageFiles.keys()].filter(path => path.startsWith(`${prefix}/`))
+                    .map(path => ({ name: path.slice(prefix.length + 1), id: path }))
+                    .slice(offset, offset + limit));
+            }
             if (url.pathname.startsWith("/storage/v1/object/rangebuddy-van-documents")) {
-                if (init.method === "DELETE") return Response.json([]);
+                if (init.method === "DELETE") {
+                    if (storageDeleteBehavior === "timeout_persist") {
+                        return Response.json({ code: "GatewayTimeout", message: "Gateway Timeout" }, { status: 504 });
+                    }
+                    for (const path of JSON.parse(body).prefixes) storageFiles.delete(path);
+                    return Response.json([]);
+                }
+                const path = url.pathname.replace("/storage/v1/object/rangebuddy-van-documents/", "");
+                if (sharedUploadBehavior !== "timeout_missing") storageFiles.set(path, body);
+                if (sharedUploadBehavior !== "ok" && path.startsWith("shared/")) {
+                    return Response.json({ code: "GatewayTimeout", message: "Gateway Timeout" }, { status: 504 });
+                }
                 return Response.json({ Key: url.pathname });
             }
             if (url.pathname === "/rest/v1/FuelEntries") {
@@ -139,7 +165,7 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         });
         return { status: response.status, body: await response.json(), headers: response.headers };
     };
-    t.beforeEach(() => { calls.length = 0; error = null; results = []; session = activeSession; storedDocument = null; storedSharedDocuments.clear(); });
+    t.beforeEach(() => { calls.length = 0; error = null; results = []; session = activeSession; storedDocument = null; storedSharedDocuments.clear(); storageFiles.clear(); sharedUploadBehavior = "ok"; storageDeleteBehavior = "ok"; });
 
     await t.test("fleet listing is admin-only, paged through Supabase and never exposes tokens", async () => {
         assert.equal((await request("/vans", { auth: device })).status, 401);
@@ -292,6 +318,60 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         assert.equal(storedSharedDocuments.size, 2);
         assert(calls.some(call => call.url.pathname === "/storage/v1/object/rangebuddy-van-documents"
             && call.body.includes(oldPath)));
+        assert(!storageFiles.has(oldPath));
+        assert.equal(uploaded.body.cleanup_pending, false);
+    });
+
+    await t.test("a timed-out Storage response still links a verified PDF and cleans older copies", async () => {
+        const oldPolicy = "shared/rcce_policy/11111111-1111-1111-1111-111111111111.pdf";
+        const orphanPolicy = "shared/rcce_policy/22222222-2222-2222-2222-222222222222.pdf";
+        const otherType = "shared/rcce_payment_confirmation/33333333-3333-3333-3333-333333333333.pdf";
+        for (const path of [oldPolicy, orphanPolicy, otherType]) storageFiles.set(path, Buffer.from("%PDF-1.7\nold"));
+        sharedUploadBehavior = "timeout_saved";
+        const response = await fetch(`${base}/documents/rcce_policy`, {
+            method: "POST", headers: { "Content-Type": "application/pdf", Authorization: web() },
+            body: Buffer.from("%PDF-1.7\nnew"),
+        });
+        assert.equal(response.status, 201);
+        const uploaded = await response.json();
+        assert.equal(uploaded.cleanup_pending, false);
+        assert.equal(storedSharedDocuments.get("rcce_policy").storage_path.split("/").length, 3);
+        assert(storageFiles.has(storedSharedDocuments.get("rcce_policy").storage_path));
+        assert(!storageFiles.has(oldPolicy));
+        assert(!storageFiles.has(orphanPolicy));
+        assert(storageFiles.has(otherType));
+        assert(calls.some(call => call.url.pathname.startsWith("/storage/v1/object/info/")));
+    });
+
+    await t.test("an unconfirmed timed-out upload never replaces the linked PDF", async () => {
+        const previousPath = "shared/rcce_policy/11111111-1111-1111-1111-111111111111.pdf";
+        storageFiles.set(previousPath, Buffer.from("%PDF-1.7\nold"));
+        storedSharedDocuments.set("rcce_policy", {
+            document_type: "rcce_policy", storage_path: previousPath,
+            original_name: "Polita RCCE.pdf", mime_type: "application/pdf",
+        });
+        sharedUploadBehavior = "timeout_missing";
+        const response = await fetch(`${base}/documents/rcce_policy`, {
+            method: "POST", headers: { "Content-Type": "application/pdf", Authorization: web() },
+            body: Buffer.from("%PDF-1.7\nnew"),
+        });
+        assert.equal(response.status, 503);
+        assert.equal(storedSharedDocuments.get("rcce_policy").storage_path, previousPath);
+        assert(storageFiles.has(previousPath));
+    });
+
+    await t.test("a failed cleanup keeps the new PDF linked and reports old copies", async () => {
+        const oldPath = "shared/rcce_policy/11111111-1111-1111-1111-111111111111.pdf";
+        storageFiles.set(oldPath, Buffer.from("%PDF-1.7\nold"));
+        storageDeleteBehavior = "timeout_persist";
+        const response = await fetch(`${base}/documents/rcce_policy`, {
+            method: "POST", headers: { "Content-Type": "application/pdf", Authorization: web() },
+            body: Buffer.from("%PDF-1.7\nnew"),
+        });
+        assert.equal(response.status, 201);
+        assert.equal((await response.json()).cleanup_pending, true);
+        assert(storageFiles.has(oldPath));
+        assert(storageFiles.has(storedSharedDocuments.get("rcce_policy").storage_path));
     });
 
     await t.test("only web admins can start and stop sessions", async () => {

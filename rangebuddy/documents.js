@@ -88,6 +88,51 @@ export const createRangeBuddyDocumentService = (database) => ({
     },
 });
 
+const sharedPdfName = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.pdf$/;
+
+async function confirmTimedOutUpload(storage, path, size, uploadError) {
+    if (!uploadError) return;
+    if (Number(uploadError.status || uploadError.statusCode) < 500) {
+        throw new RangeBuddyError(502, "Unable to upload the document");
+    }
+    // A Storage gateway timeout can arrive after the object was saved.
+    for (let attempt = 0; attempt < 3; attempt++) {
+        const { data, error } = await storage.info(path);
+        if (!error && Number(data.size) === size) return;
+        if (!error) throw new RangeBuddyError(502, "Storage saved an incomplete PDF");
+        if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+    }
+    throw new RangeBuddyError(503, "Storage timed out; the PDF could not be confirmed. Refresh before retrying.");
+}
+
+async function listSharedPdfPaths(storage, type) {
+    const prefix = `shared/${type}`;
+    const paths = [];
+    for (let offset = 0; ; offset += 100) {
+        const { data, error } = await storage.list(prefix, { limit: 100, offset });
+        if (error) throw error;
+        for (const file of data) {
+            if (sharedPdfName.test(file.name)) paths.push(`${prefix}/${file.name}`);
+        }
+        if (data.length < 100) return paths;
+    }
+}
+
+async function removeSupersededPdfs(storage, type, currentPath) {
+    try {
+        const oldPaths = (await listSharedPdfPaths(storage, type)).filter(path => path !== currentPath);
+        if (!oldPaths.length) return false;
+        for (let offset = 0; offset < oldPaths.length; offset += 100) {
+            await storage.remove(oldPaths.slice(offset, offset + 100));
+        }
+        // Verify after removal: Storage can time out after deleting the objects.
+        return (await listSharedPdfPaths(storage, type)).some(path => path !== currentPath);
+    } catch (error) {
+        console.error("Unable to verify RangeBuddy shared document cleanup", { type, status: error.status });
+        return true;
+    }
+}
+
 export const createRangeBuddySharedDocumentService = (database) => ({
     async list() {
         const { data, error } = await database.from("RangeBuddyDocuments")
@@ -106,17 +151,12 @@ export const createRangeBuddySharedDocumentService = (database) => ({
             throw new RangeBuddyError(415, "File content does not match its type");
         }
         const name = originalName(nameHeader, "pdf");
-        const table = database.from("RangeBuddyDocuments");
-        const { data: previous, error: readError } = await table
-            .select("storage_path").eq("document_type", type).maybeSingle();
-        checkDatabaseError(readError);
-
         const path = `shared/${type}/${randomUUID()}.pdf`;
         const storage = database.storage.from(bucketName);
         const { error: uploadError } = await storage.upload(path, body, {
             contentType: format.mime, upsert: false,
         });
-        if (uploadError) throw new RangeBuddyError(502, "Unable to upload the document");
+        await confirmTimedOutUpload(storage, path, body.length, uploadError);
 
         const { data, error } = await database.from("RangeBuddyDocuments").upsert({
             document_type: type, storage_path: path, original_name: name,
@@ -127,11 +167,8 @@ export const createRangeBuddySharedDocumentService = (database) => ({
             await storage.remove([path]);
             checkDatabaseError(error);
         }
-        if (previous?.storage_path) {
-            const { error: removeError } = await storage.remove([previous.storage_path]);
-            if (removeError) console.error("Unable to remove replaced RangeBuddy document");
-        }
-        return data;
+        const cleanupPending = await removeSupersededPdfs(storage, type, path);
+        return { ...data, cleanup_pending: cleanupPending };
     },
 
     async signedUrl(type) {
