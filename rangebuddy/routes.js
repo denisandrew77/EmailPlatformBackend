@@ -3,7 +3,7 @@ import { rateLimit } from "express-rate-limit";
 import { rangeBuddyErrorHandler } from "./errors.js";
 import { createRangeBuddyAuth } from "./security.js";
 import { createRangeBuddyService } from "./service.js";
-import { createRangeBuddyDocumentService } from "./documents.js";
+import { createRangeBuddyDocumentService, createRangeBuddySharedDocumentService } from "./documents.js";
 import {
     adminEntrySchema, adminMonthSchema, adminPlateSchema,
     createVanSchema, redeemCodeSchema, vanActionSchema, updateVanDueDateSchema,
@@ -15,6 +15,7 @@ import { vanDueDateFields } from "./data.js";
 import { z } from "zod";
 
 const documentTypeSchema = z.enum(vanDueDateFields);
+const sharedDocumentTypeSchema = z.enum(["rcce_policy", "rcce_payment_confirmation"]);
 
 export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
     if (typeof requireWebAdmin !== "function") throw new Error("RangeBuddy requires the existing web admin authorizer");
@@ -23,6 +24,7 @@ export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
     const authenticate = createRangeBuddyAuth({ database, requireWebAdmin });
     const service = createRangeBuddyService(database);
     const documents = createRangeBuddyDocumentService(database);
+    const sharedDocuments = createRangeBuddySharedDocumentService(database);
     const redemptionLimiter = rateLimit({
         windowMs: 60 * 1000,
         limit: 5,
@@ -78,6 +80,24 @@ export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
         res.status(201).json(await documents.upload(
             entryIdSchema.parse(req.params.vanId), documentTypeSchema.parse(req.params.type),
             req.body, req.headers["content-type"], req.headers["x-file-name"],
+        ));
+    });
+
+    router.get("/documents", async (req, res) => {
+        if (!(await requireWebAdmin(req, res))) return;
+        res.json(await sharedDocuments.list());
+    });
+    router.get("/documents/:type/url", async (req, res) => {
+        if (!(await requireWebAdmin(req, res))) return;
+        res.json(await sharedDocuments.signedUrl(sharedDocumentTypeSchema.parse(req.params.type)));
+    });
+    router.post("/documents/:type", async (req, res, next) => {
+        if (!(await requireWebAdmin(req, res))) return;
+        raw({ type: () => true, limit: "5mb" })(req, res, next);
+    }, async (req, res) => {
+        res.status(201).json(await sharedDocuments.upload(
+            sharedDocumentTypeSchema.parse(req.params.type), req.body,
+            req.headers["content-type"], req.headers["x-file-name"],
         ));
     });
 

@@ -28,6 +28,7 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
     let error = null;
     let results = [];
     let storedDocument = null;
+    const storedSharedDocuments = new Map();
     const activeSession = { id: 3, van_id: 1, start_kms: 100, started_at: "2026-10-17T10:00:00Z",
         ended_at: null, is_active: true, average_consumption: 18.33, average_fuel_price: 7.33 };
     let session = activeSession;
@@ -66,6 +67,16 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
                 const fields = url.searchParams.get("select").split(",");
                 const projected = storedDocument && Object.fromEntries(fields.map(field => [field, storedDocument[field]]));
                 return Response.json(init.method === "POST" ? projected : projected ? [projected] : []);
+            }
+            if (url.pathname === "/rest/v1/RangeBuddyDocuments") {
+                const row = Array.isArray(body) ? body[0] : body;
+                if (init.method === "POST") storedSharedDocuments.set(row.document_type, row);
+                const fields = url.searchParams.get("select").split(",");
+                const selected = init.method === "POST" ? [row] : [...storedSharedDocuments.values()]
+                    .filter(document => !url.searchParams.has("document_type")
+                        || url.searchParams.get("document_type") === `eq.${document.document_type}`);
+                const projected = selected.map(document => Object.fromEntries(fields.map(field => [field, document[field]])));
+                return Response.json(init.method === "POST" ? projected[0] : projected);
             }
             if (url.pathname.startsWith("/storage/v1/object/sign/rangebuddy-van-documents/")) {
                 return Response.json({ signedURL: "/object/sign/rangebuddy-van-documents/test?token=signed" });
@@ -128,7 +139,7 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         });
         return { status: response.status, body: await response.json(), headers: response.headers };
     };
-    t.beforeEach(() => { calls.length = 0; error = null; results = []; session = activeSession; storedDocument = null; });
+    t.beforeEach(() => { calls.length = 0; error = null; results = []; session = activeSession; storedDocument = null; storedSharedDocuments.clear(); });
 
     await t.test("fleet listing is admin-only, paged through Supabase and never exposes tokens", async () => {
         assert.equal((await request("/vans", { auth: device })).status, 401);
@@ -224,6 +235,61 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         const oldPath = storedDocument.storage_path;
         assert.equal((await upload("", web())).status, 201);
         assert.notEqual(storedDocument.storage_path, oldPath);
+        assert(calls.some(call => call.url.pathname === "/storage/v1/object/rangebuddy-van-documents"
+            && call.body.includes(oldPath)));
+    });
+
+    await t.test("shared RCCE PDFs can only be uploaded and viewed by web admins", async () => {
+        const path = "/documents/rcce_policy";
+        const nonAdmin = web(2);
+        const pdf = new Uint8Array(Buffer.from("%PDF-1.7\nexample"));
+        const upload = async (auth, file = pdf, type = "application/pdf") => {
+            const response = await fetch(`${base}${path}`, {
+                method: "POST", headers: { "Content-Type": type,
+                    "X-File-Name": encodeURIComponent("Polita RCCE.pdf"),
+                    ...(auth ? { Authorization: auth } : {}) }, body: file,
+            });
+            return { status: response.status, body: await response.json() };
+        };
+        for (const auth of [undefined, device, nonAdmin]) {
+            assert.equal((await request("/documents", { auth })).status, auth === nonAdmin ? 403 : 401);
+            assert.equal((await upload(auth)).status, auth === nonAdmin ? 403 : 401);
+            assert.equal((await request(`${path}/url`, { auth })).status, auth === nonAdmin ? 403 : 401);
+        }
+        assert.equal(calls.length, 0);
+        assert.equal((await upload(web(), new Uint8Array(Buffer.from("<html>bad</html>")))).status, 415);
+        assert.equal((await upload(web(), pdf, "image/png")).status, 415);
+        assert.equal((await request("/documents/unknown/url", { auth: web() })).status, 400);
+        assert.equal((await request(`${path}/url`, { auth: web() })).status, 404);
+        assert.equal(calls.filter(call => call.url.pathname.startsWith("/storage/")).length, 0);
+
+        const uploaded = await upload(web());
+        assert.equal(uploaded.status, 201);
+        assert.equal(uploaded.body.document_type, "rcce_policy");
+        assert.equal(uploaded.body.original_name, "Polita RCCE.pdf");
+        assert(!JSON.stringify(uploaded.body).includes("storage_path"));
+        assert.match(storedSharedDocuments.get("rcce_policy").storage_path, /^shared\/rcce_policy\/.*\.pdf$/);
+        const listing = await request("/documents", { auth: web() });
+        assert.equal(listing.status, 200);
+        assert.equal(listing.body[0].original_name, "Polita RCCE.pdf");
+        assert(!JSON.stringify(listing.body).includes("storage_path"));
+        const link = await request(`${path}/url`, { auth: web() });
+        assert.equal(link.status, 200);
+        assert.match(link.body.url, /token=signed/);
+
+        const second = await fetch(`${base}/documents/rcce_payment_confirmation`, {
+            method: "POST", headers: { "Content-Type": "application/pdf",
+                "X-File-Name": encodeURIComponent("Confirmare Plata RCCE.pdf"), Authorization: web() }, body: pdf,
+        });
+        assert.equal(second.status, 201);
+        assert.equal(storedSharedDocuments.size, 2);
+        assert.equal((await request("/documents", { auth: web() })).body.length, 2);
+        assert.equal((await request("/documents/rcce_payment_confirmation/url", { auth: web() })).status, 200);
+
+        const oldPath = storedSharedDocuments.get("rcce_policy").storage_path;
+        assert.equal((await upload(web())).status, 201);
+        assert.notEqual(storedSharedDocuments.get("rcce_policy").storage_path, oldPath);
+        assert.equal(storedSharedDocuments.size, 2);
         assert(calls.some(call => call.url.pathname === "/storage/v1/object/rangebuddy-van-documents"
             && call.body.includes(oldPath)));
     });

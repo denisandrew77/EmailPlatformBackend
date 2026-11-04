@@ -87,3 +87,61 @@ export const createRangeBuddyDocumentService = (database) => ({
         return { url: signed.signedUrl };
     },
 });
+
+export const createRangeBuddySharedDocumentService = (database) => ({
+    async list() {
+        const { data, error } = await database.from("RangeBuddyDocuments")
+            .select("document_type,original_name,mime_type,uploaded_at");
+        checkDatabaseError(error);
+        return data;
+    },
+
+    async upload(type, body, declaredType, nameHeader) {
+        const format = fileFormat(body);
+        if (format?.mime !== "application/pdf" || body.length > 5 * 1024 * 1024) {
+            throw new RangeBuddyError(415, "Upload a PDF file up to 5 MB");
+        }
+        const mime = String(declaredType || "").split(";")[0].toLowerCase();
+        if (mime && mime !== "application/octet-stream" && mime !== format.mime) {
+            throw new RangeBuddyError(415, "File content does not match its type");
+        }
+        const name = originalName(nameHeader, "pdf");
+        const table = database.from("RangeBuddyDocuments");
+        const { data: previous, error: readError } = await table
+            .select("storage_path").eq("document_type", type).maybeSingle();
+        checkDatabaseError(readError);
+
+        const path = `shared/${type}/${randomUUID()}.pdf`;
+        const storage = database.storage.from(bucketName);
+        const { error: uploadError } = await storage.upload(path, body, {
+            contentType: format.mime, upsert: false,
+        });
+        if (uploadError) throw new RangeBuddyError(502, "Unable to upload the document");
+
+        const { data, error } = await database.from("RangeBuddyDocuments").upsert({
+            document_type: type, storage_path: path, original_name: name,
+            mime_type: format.mime, uploaded_at: new Date().toISOString(),
+        }, { onConflict: "document_type" })
+            .select("document_type,original_name,mime_type,uploaded_at").single();
+        if (error) {
+            await storage.remove([path]);
+            checkDatabaseError(error);
+        }
+        if (previous?.storage_path) {
+            const { error: removeError } = await storage.remove([previous.storage_path]);
+            if (removeError) console.error("Unable to remove replaced RangeBuddy document");
+        }
+        return data;
+    },
+
+    async signedUrl(type) {
+        const { data, error } = await database.from("RangeBuddyDocuments")
+            .select("storage_path").eq("document_type", type).maybeSingle();
+        checkDatabaseError(error);
+        if (!data) throw new RangeBuddyError(404, "Document not found", "RB_DOCUMENT_NOT_FOUND");
+        const { data: signed, error: signError } = await database.storage.from(bucketName)
+            .createSignedUrl(data.storage_path, 60);
+        if (signError || !signed?.signedUrl) throw new RangeBuddyError(502, "Unable to open the document");
+        return { url: signed.signedUrl };
+    },
+});
