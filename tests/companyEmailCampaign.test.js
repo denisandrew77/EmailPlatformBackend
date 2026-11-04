@@ -41,8 +41,8 @@ const invoke = async (t, body, companies = []) => {
         body: {
             template: "quotationRequest",
             templateData: {
-                loading: { date: "2026-11-02T00:00:00+02:00", time: "10.00" },
-                delivery: { date: "2026-11-03T00:00:00+02:00", time: "08.00" },
+                loading: { date: "2026-11-02", time: "10.00" },
+                delivery: { date: "2026-11-03", time: "08.00" },
             },
             ...body,
         },
@@ -110,12 +110,25 @@ test("invalid quotation schedule is rejected before querying or queueing", async
     const { response, queries, jobs } = await invoke(t, {
         threeTonnCategory: true,
         templateData: {
-            loading: { date: "2026-11-02T00:00:00+02:00", time: "10.00" },
-            delivery: { date: "2026-11-02T00:00:00+02:00", time: "10:00" },
+            loading: { date: "2026-11-02", time: "10.00" },
+            delivery: { date: "2026-11-02", time: "10:00" },
         },
     });
     assert.equal(response.code, 400);
     assert.match(response.body.error, /after loading/);
+    assert.deepEqual(queries, []);
+    assert.deepEqual(jobs, []);
+});
+
+test("campaign rejects timestamp dates rather than shifting a calendar day", async (t) => {
+    const { response, queries, jobs } = await invoke(t, {
+        threeTonnCategory: true,
+        templateData: {
+            loading: { date: "2026-11-04T07:18:15.545Z", time: "11.00" },
+            delivery: { date: "2026-11-04T23:00:00.000Z", time: "08.00" },
+        },
+    });
+    assert.equal(response.code, 400);
     assert.deepEqual(queries, []);
     assert.deepEqual(jobs, []);
 });
@@ -134,10 +147,40 @@ test("quotation creation rejects an invalid schedule before inserting", async (t
     };
     await addQuotation({
         body: {
-            senderDate: "2026-11-02T00:00:00+02:00", senderTime: "10.00",
-            receiverDate: "2026-11-02T00:00:00+02:00", receiverTime: "09.00",
+            senderDate: "2026-11-02", senderTime: "10.00",
+            receiverDate: "2026-11-02", receiverTime: "09.00",
         },
     }, response);
     assert.equal(response.code, 400);
     assert.match(response.body.error, /after loading/);
+});
+
+test("quotation creation stores date-only strings without UTC conversion", async (t) => {
+    const addQuotation = dbRouter.stack.find(
+        (layer) => layer.route?.path === "/addQuotation",
+    ).route.stack.at(-1).handle;
+    const inserts = [];
+    t.mock.method(globalThis, "fetch", async (input, init) => {
+        const url = new URL(typeof input === "string" ? input : input.url);
+        assert.equal(url.pathname, "/rest/v1/Quotations");
+        inserts.push(JSON.parse(init.body));
+        return new Response(null, { status: 201 });
+    });
+    const response = {
+        code: 200,
+        status(code) { this.code = code; return this; },
+        json(body) { this.body = body; return this; },
+    };
+    await addQuotation({
+        user: { user: { id: 1 } },
+        body: {
+            quotationNumber: 10063,
+            senderDate: "2026-11-04", senderTime: "11.00",
+            receiverDate: "2026-11-05", receiverTime: "08.00",
+        },
+    }, response);
+    assert.equal(response.code, 200);
+    assert.equal(response.body.created, true);
+    assert.equal(inserts[0].senderDate, "2026-11-04");
+    assert.equal(inserts[0].receiverDate, "2026-11-05");
 });

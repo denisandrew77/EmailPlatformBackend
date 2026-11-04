@@ -8,14 +8,8 @@ const escapeHtml = (value) => {
 };
 
 const formatDate = (dateValue) => {
-  if (!dateValue) return "";
-
-  const date = new Date(dateValue);
-  if (!Number.isNaN(date.getTime())) {
-    return `${String(date.getDate()).padStart(2, "0")}.${String(date.getMonth() + 1).padStart(2, "0")}.${String(date.getFullYear()).slice(-2)}`;
-  }
-
-  return String(dateValue);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateValue);
+  return match ? `${match[3]}.${match[2]}.${match[1].slice(-2)}` : "";
 };
 
 const formatLocation = (location = {}) => {

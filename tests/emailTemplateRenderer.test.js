@@ -46,3 +46,27 @@ test("quotation requests include the unsubscribe link in their plain-text altern
     assert.match(rendered.html, /href="https:\/\/example\.com\/unsubscribe\?token=quote"/);
     assert.match(rendered.html, /If you do not want to receive our transport offers any more, please <a href="https:\/\/example\.com\/unsubscribe\?token=quote"[^>]*>click here<\/a>\./);
 });
+
+test("quotation calendar dates render identically in every server timezone", () => {
+    const originalZone = process.env.TZ;
+    try {
+        for (const zone of ["UTC", "Europe/Bucharest", "America/Los_Angeles"]) {
+            process.env.TZ = zone;
+            const rendered = renderEmailTemplate({
+                template: "quotationRequest",
+                templateData: {
+                    loadOrder: 10063,
+                    loading: { country: "FR", postalCode: "86100", city: "Chatellerault", date: "2026-11-04", time: "11.00" },
+                    delivery: { country: "DE", postalCode: "30855", city: "Langenhagen", date: "2026-11-05", time: "08.00" },
+                    goods: [],
+                },
+            });
+            assert.match(rendered.text, /Loading: FR-86100 - Chatellerault - 04\.11\.26 - 11\.00/);
+            assert.match(rendered.text, /Delivery: DE-30855 - Langenhagen - 05\.11\.26 - 08\.00/);
+            assert.match(rendered.html, /DE-30855 - Langenhagen - 05\.11\.26 - 08\.00/);
+        }
+    } finally {
+        if (originalZone === undefined) delete process.env.TZ;
+        else process.env.TZ = originalZone;
+    }
+});

@@ -1,14 +1,15 @@
 import { DateTime } from "luxon";
 
 const timePattern = /^([01]?\d|2[0-3])[.:]([0-5]\d)$/;
-const businessZone = "Europe/Bucharest";
+const dateOnlyPattern = /^\d{4}-\d{2}-\d{2}$/;
 
 function scheduleValue(dateValue, timeValue) {
     if (typeof dateValue !== "string" || typeof timeValue !== "string") return null;
-    const date = DateTime.fromISO(dateValue, { zone: businessZone });
+    if (!dateOnlyPattern.test(dateValue)) return null;
+    const date = DateTime.fromISO(dateValue, { zone: "UTC" });
     const time = timeValue.trim().match(timePattern);
-    if (!date.isValid || !time) return null;
-    return `${date.toISODate()}T${time[1].padStart(2, "0")}:${time[2]}`;
+    if (!date.isValid || date.toISODate() !== dateValue || !time) return null;
+    return `${dateValue}T${time[1].padStart(2, "0")}:${time[2]}`;
 }
 
 export function quotationScheduleError(loading, delivery) {
