@@ -76,13 +76,13 @@ export const createRangeBuddyDocumentService = (database) => ({
         return data;
     },
 
-    async signedUrl(vanId, type) {
+    async signedUrl(vanId, type, download = false) {
         const { data, error } = await database.from(tableName)
-            .select("storage_path").eq("van_id", vanId).eq("document_type", type).maybeSingle();
+            .select("storage_path,original_name").eq("van_id", vanId).eq("document_type", type).maybeSingle();
         checkDatabaseError(error);
         if (!data) throw new RangeBuddyError(404, "Document not found", "RB_DOCUMENT_NOT_FOUND");
         const { data: signed, error: signError } = await database.storage.from(bucketName)
-            .createSignedUrl(data.storage_path, 60);
+            .createSignedUrl(data.storage_path, 60, download ? { download: data.original_name } : undefined);
         if (signError || !signed?.signedUrl) throw new RangeBuddyError(502, "Unable to open the document");
         return { url: signed.signedUrl };
     },
@@ -171,13 +171,13 @@ export const createRangeBuddySharedDocumentService = (database) => ({
         return { ...data, cleanup_pending: cleanupPending };
     },
 
-    async signedUrl(type) {
+    async signedUrl(type, download = false) {
         const { data, error } = await database.from("RangeBuddyDocuments")
-            .select("storage_path").eq("document_type", type).maybeSingle();
+            .select("storage_path,original_name").eq("document_type", type).maybeSingle();
         checkDatabaseError(error);
         if (!data) throw new RangeBuddyError(404, "Document not found", "RB_DOCUMENT_NOT_FOUND");
         const { data: signed, error: signError } = await database.storage.from(bucketName)
-            .createSignedUrl(data.storage_path, 60);
+            .createSignedUrl(data.storage_path, 60, download ? { download: data.original_name } : undefined);
         if (signError || !signed?.signedUrl) throw new RangeBuddyError(502, "Unable to open the document");
         return { url: signed.signedUrl };
     },

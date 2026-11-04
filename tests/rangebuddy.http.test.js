@@ -257,6 +257,12 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         const link = await request("/vans/1/documents/itp_due_date/url", { auth: web() });
         assert.equal(link.status, 200);
         assert.match(link.body.url, /token=signed/);
+        assert.equal(new URL(link.body.url).searchParams.has("download"), false);
+        const download = await request("/vans/1/documents/itp_due_date/url?download=1", { auth: web() });
+        assert.equal(download.status, 200);
+        assert.equal(new URL(download.body.url).searchParams.get("download"), "inspection.pdf");
+        assert.equal((await request("/vans/1/documents/itp_due_date/url?download=1", { auth: device })).status, 401);
+        assert.equal((await request("/vans/1/documents/itp_due_date/url?download=1", { auth: web(2) })).status, 403);
         assert.equal((await request("/vans/1/documents/itp_due_date/url", { auth: web(2) })).status, 403);
         const oldPath = storedDocument.storage_path;
         assert.equal((await upload("", web())).status, 201);
@@ -302,6 +308,12 @@ test("RangeBuddy HTTP routes using the Supabase client", async (t) => {
         const link = await request(`${path}/url`, { auth: web() });
         assert.equal(link.status, 200);
         assert.match(link.body.url, /token=signed/);
+        assert.equal(new URL(link.body.url).searchParams.has("download"), false);
+        const download = await request(`${path}/url?download=1`, { auth: web() });
+        assert.equal(download.status, 200);
+        assert.equal(new URL(download.body.url).searchParams.get("download"), "Polita RCCE.pdf");
+        assert.equal((await request(`${path}/url?download=1`, { auth: device })).status, 401);
+        assert.equal((await request(`${path}/url?download=1`, { auth: nonAdmin })).status, 403);
 
         const second = await fetch(`${base}/documents/rcce_payment_confirmation`, {
             method: "POST", headers: { "Content-Type": "application/pdf",

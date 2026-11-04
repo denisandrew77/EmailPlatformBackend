@@ -16,6 +16,7 @@ import { z } from "zod";
 
 const documentTypeSchema = z.enum(vanDueDateFields);
 const sharedDocumentTypeSchema = z.enum(["rcce_policy", "rcce_payment_confirmation"]);
+const downloadQuerySchema = z.literal("1").optional();
 
 export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
     if (typeof requireWebAdmin !== "function") throw new Error("RangeBuddy requires the existing web admin authorizer");
@@ -71,6 +72,7 @@ export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
         if (!(await requireWebAdmin(req, res))) return;
         res.json(await documents.signedUrl(
             entryIdSchema.parse(req.params.vanId), documentTypeSchema.parse(req.params.type),
+            downloadQuerySchema.parse(req.query.download) === "1",
         ));
     });
     router.post("/vans/:vanId/documents/:type", async (req, res, next) => {
@@ -89,7 +91,9 @@ export const createRangeBuddyRouter = ({ requireWebAdmin, database }) => {
     });
     router.get("/documents/:type/url", async (req, res) => {
         if (!(await requireWebAdmin(req, res))) return;
-        res.json(await sharedDocuments.signedUrl(sharedDocumentTypeSchema.parse(req.params.type)));
+        res.json(await sharedDocuments.signedUrl(
+            sharedDocumentTypeSchema.parse(req.params.type), downloadQuerySchema.parse(req.query.download) === "1",
+        ));
     });
     router.post("/documents/:type", async (req, res, next) => {
         if (!(await requireWebAdmin(req, res))) return;
