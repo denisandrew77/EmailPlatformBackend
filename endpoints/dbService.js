@@ -836,6 +836,7 @@ dbRouter.get("/getAllCompanies", async (req, res) => {
         p_three_tonn: req.query.threeTonnCategory === "true",
         p_seven_tonn: req.query.sevenTonnCategory === "true",
         p_caddy: req.query.caddyCategory === "true",
+        p_none: req.query.noneCategory === "true",
         p_limit: 30,
         p_offset: offset,
     });
