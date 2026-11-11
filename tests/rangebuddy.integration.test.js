@@ -696,4 +696,50 @@ test("RangeBuddy Supabase RPC functions on PostgreSQL", { skip: !testUrl }, asyn
             await assert.rejects(sql(`set role ${role}; select public.rangebuddy_update_entry(1, 250, 20, 7, now())`), /permission denied/);
         }
     });
+
+    const activateWithCurrentFlow = async () => {
+        await rpc("public.rangebuddy_create_van('BH01ABC', 100)");
+        await rpc(`public.rangebuddy_issue_code(1, '${codeHash}')`);
+        await rpc(`public.rangebuddy_redeem_code('${codeHash}', '${firstHash}')`);
+    };
+    await sql('truncate "RangeBuddyActivationCodes", "FuelEntries", "DriverSessions", "Vans" restart identity');
+    await activateWithCurrentFlow();
+    await rpc("public.rangebuddy_create_entry(1, null, 200, 50, 6, now())");
+    await rpc("public.rangebuddy_create_entry(1, null, 300, 20, 7, now())");
+    assert.equal((await rpc("public.rangebuddy_current_session(1, null)")).average_consumption, 20);
+    const includeFirstMigration = await readFile(new URL("../migrations/023_rangebuddy_include_first_refill_in_session_average.sql", import.meta.url), "utf8");
+    await sql(includeFirstMigration);
+    await sql(includeFirstMigration);
+    assert.equal((await rpc("public.rangebuddy_current_session(1, null)")).average_consumption, 35);
+
+    await t.test("session average includes the first refill across creation, correction and deletion", async () => {
+        await activateWithCurrentFlow();
+        const entry = (kms, litres, price) => rpc(`public.rangebuddy_create_entry(1, null, ${kms}, ${litres}, ${price}, now())`);
+        const first = await entry(200, 50, 6);
+        assert.equal((await rpc("public.rangebuddy_current_session(1, null)")).average_consumption, 50);
+        const middle = await entry(300, 20, 7);
+        assert.equal(middle.current_consumption, 20);
+        assert.equal((await rpc("public.rangebuddy_current_session(1, null)")).average_consumption, 35);
+        const last = await entry(400, 30, 8);
+        assert.equal((await rpc("public.rangebuddy_current_session(1, null)")).average_consumption, 33.33);
+
+        await rpc(`public.rangebuddy_update_entry(${middle.id}, 320, 24, 10, now())`);
+        assert.equal(await sql(`select current_consumption from "FuelEntries" where id = ${last.id}`), "37.50");
+        assert.equal((await rpc("public.rangebuddy_current_session(1, null)")).average_consumption, 34.67);
+        await rpc(`public.rangebuddy_update_entry(${first.id}, 220, 30, 6, now())`);
+        assert.equal((await rpc("public.rangebuddy_current_session(1, null)")).average_consumption, 28);
+        await rpc("public.rangebuddy_update_session_start(1, 1, 120)");
+        assert.equal((await rpc("public.rangebuddy_current_session(1, null)")).average_consumption, 30);
+        assert.equal(await sql(`select current_consumption from "FuelEntries" where id = ${first.id}`), "30.00");
+
+        await rpc(`public.rangebuddy_delete_entry(${middle.id})`);
+        assert.equal((await rpc("public.rangebuddy_current_session(1, null)")).average_consumption, 21.43);
+        assert.equal(await sql(`select current_consumption from "FuelEntries" where id = ${last.id}`), "16.67");
+        await rpc(`public.rangebuddy_delete_entry(${first.id})`);
+        assert.equal((await rpc("public.rangebuddy_current_session(1, null)")).average_consumption, 10.71);
+        await rpc(`public.rangebuddy_delete_entry(${last.id})`);
+        const empty = await rpc("public.rangebuddy_current_session(1, null)");
+        assert.equal(empty.average_consumption, null);
+        assert.equal(empty.average_fuel_price, null);
+    });
 });
