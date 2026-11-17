@@ -27,7 +27,7 @@ test("sends content and credentials using SMTP2GO's contract", async () => {
         });
         return Response.json({ data: { succeeded: 1, failed: 0, failures: [], email_id: "test-id" } });
     };
-    assert.equal((await sendEmail(email)).data.email_id, "test-id");
+    assert.equal((await sendEmail(email, async () => {})).data.email_id, "test-id");
 });
 
 test("rejects HTTP errors, HTTP-200 failures, partial acceptance and malformed responses", async () => {
@@ -40,7 +40,7 @@ test("rejects HTTP errors, HTTP-200 failures, partial acceptance and malformed r
         new Response("not JSON", { status: 502 }),
     ]) {
         globalThis.fetch = async () => response;
-        await assert.rejects(sendEmail({ ...email, to: [email.to, "second@example.com"] }), /SMTP2GO/);
+        await assert.rejects(sendEmail({ ...email, to: [email.to, "second@example.com"] }, async () => {}), /SMTP2GO/);
     }
 });
 

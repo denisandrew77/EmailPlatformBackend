@@ -48,6 +48,24 @@ multi-recipient sends can cause duplicates on retry. Campaign jobs use one recip
 
 Run adapter and webhook checks without sending mail: `node --test tests/*.test.js`.
 
+## History email allowance
+
+Apply `migrations/024_email_allowance.sql` to Supabase before deploying the API
+and email workers. Deploy both together so every sender records usage. In History,
+an admin can set the shared monthly allowance and next reset date. Internal
+employees can read the summary; changes require a current database admin role.
+
+The chosen day repeats monthly at midnight in Europe/Bucharest; months without
+that day use their last day. Editing the reset date recalculates the current period.
+This summary tracks usage and does not block sends when the allowance is exhausted.
+
+Sent totals count recipient acceptances from the SMTP2GO send response, including
+accepted recipients in partial failures and internal notification emails. Tracking
+starts when this migration is installed; prior provider usage is not backfilled.
+The History box refreshes every minute. Provider acceptance does not confirm inbox
+delivery. Usage write failures are logged without retrying an already accepted send;
+such failures or ambiguous provider timeouts can leave the count incomplete.
+
 References:
 - https://developers.smtp2go.com/reference/send-standard-email
 - https://developers.smtp2go.com/docs/setup-a-webhook

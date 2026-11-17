@@ -1,3 +1,5 @@
+import { recordEmailUsage } from "./emailAllowanceService.js";
+
 const getSenderEmail = () => {
     if (!process.env.SMTP2GO_FROM_EMAIL) {
         throw new Error("SMTP2GO_FROM_EMAIL is not configured");
@@ -7,7 +9,7 @@ const getSenderEmail = () => {
     return `"${senderName}" <${process.env.SMTP2GO_FROM_EMAIL}>`;
 };
 
-export const sendEmail = async ({ to, subject, text, html }) => {
+export const sendEmail = async ({ to, subject, text, html }, recordUsage = recordEmailUsage) => {
     const apiKey = process.env.SMTP2GO_API_KEY;
     if (!apiKey) throw new Error("SMTP2GO_API_KEY is not configured");
 
@@ -42,6 +44,7 @@ export const sendEmail = async ({ to, subject, text, html }) => {
     }
 
     const data = result?.data;
+    await recordUsage(result);
     // SMTP2GO can return HTTP 200 even when recipients were rejected.
     if (!response.ok || data?.error || data?.error_code || data?.failed > 0 || data?.failures?.length || data?.succeeded !== recipients.length) {
         throw new Error(`SMTP2GO send failed (HTTP ${response.status}): ${data?.error_code || "recipient acceptance failed"}`);

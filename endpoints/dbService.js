@@ -5,6 +5,7 @@ import { enqueueEmailJob, enqueueEmailJobs } from "../services/emailQueueService
 import { sendEmail } from "../services/emailSenderService.js";
 import { hashPassword, isPasswordHash, verifyPassword } from "../services/passwordService.js";
 import { quotationScheduleError } from "../services/quotationSchedule.js";
+import { getEmailAllowance, validateAllowance } from "../services/emailAllowanceService.js";
 import {
     buildUncategorizedCompanyEmailJobs,
     normalizeUncategorizedCompanyMessage,
@@ -1369,6 +1370,31 @@ dbRouter.post("/addQuotation", requireAuthenticatedUser, requireInternalUser, as
         created: true,
         observations,
     });
+});
+
+dbRouter.get("/api/v1/internal/email-allowance", requireAuthenticatedUser, async (req, res) => {
+    try {
+        res.json(await getEmailAllowance(supabase));
+    } catch (error) {
+        console.error("Unable to load email allowance", error);
+        res.status(500).json({ error: "Unable to load email allowance" });
+    }
+});
+
+dbRouter.put("/api/v1/internal/email-allowance", async (req, res) => {
+    if (!(await requireAdmin(req, res))) return;
+    const validationError = validateAllowance(req.body);
+    if (validationError) return res.status(400).json({ error: validationError });
+    try {
+        const { error } = await supabase.from("email_allowance").update({
+            monthly_limit: req.body.monthlyLimit, reset_date: req.body.resetDate,
+        }).eq("id", true);
+        if (error) throw error;
+        res.json(await getEmailAllowance(supabase));
+    } catch (error) {
+        console.error("Unable to save email allowance", error);
+        res.status(500).json({ error: "Unable to save email allowance" });
+    }
 });
 
 dbRouter.get("/getAllQuotations", requireAuthenticatedUser, requireInternalUser, async (req, res) => {
